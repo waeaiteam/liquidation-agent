@@ -69,8 +69,15 @@ def parse_funding(raw_funding: Any) -> list[dict[str, Any]]:
     if not isinstance(funding_list, list):
         return funding
     for item in funding_list[:3]:
+        if not isinstance(item, dict):
+            continue
         sym = item.get("symbol", "")
-        for exchange, value in (item.get("umap", {}) or {}).items():
+        umap = item.get("umap", {}) or {}
+        if not isinstance(umap, dict):
+            continue
+        for exchange, value in umap.items():
+            if not isinstance(value, dict):
+                continue
             rate = value.get("fr") or value.get("fundingRate") or 0
             funding.append({"symbol": sym, "exchange": exchange, "rate": rate})
     return funding

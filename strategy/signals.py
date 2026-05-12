@@ -174,6 +174,8 @@ class LiquidationContrarianSignalEngine:
     def _history_spike_ratio(self, snapshot: MarketSnapshot, dominant: float) -> float:
         values = []
         for item in snapshot.history or []:
+            if not isinstance(item, dict):
+                continue
             long_value = float(item.get("longVolUsd") or item.get("longTurnover") or 0)
             short_value = float(item.get("shortVolUsd") or item.get("shortTurnover") or 0)
             total = max(long_value, short_value)
@@ -188,6 +190,8 @@ class LiquidationContrarianSignalEngine:
         rates = []
         exchange = snapshot.exchange.lower()
         for item in snapshot.funding or []:
+            if not isinstance(item, dict):
+                continue
             symbol = str(item.get("symbol") or "").upper()
             item_exchange = str(item.get("exchange") or "").lower()
             if symbol and symbol != snapshot.symbol.upper():
@@ -203,5 +207,7 @@ class LiquidationContrarianSignalEngine:
     def _open_interest(self, snapshot: MarketSnapshot) -> float:
         total = 0.0
         for item in snapshot.oi or []:
+            if not isinstance(item, dict):
+                continue
             total += float(item.get("openInterest") or item.get("openInterestUsd") or item.get("coinValue") or 0)
         return total

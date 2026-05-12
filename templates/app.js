@@ -20,6 +20,8 @@ const state = {
   grok: { apiKey: '', model: 'grok-4.3', baseUrl: 'https://api.x.ai/v1', systemPrompt: '' },
 };
 
+const CHAT_WELCOME = '你好！我是清算反向策略 Agent。我可以帮你分析当前市场状况、解读清算地图数据、调整策略参数，或者回答任何关于交易策略的问题。';
+
 // ============== UTILITIES ==============
 const fmt = {
   num(v, d = 2) {
@@ -172,8 +174,39 @@ async function loadDesktopKeys() {
     if (keys?.pk && $('pk')) $('pk').value = keys.pk;
     if (keys?.llm_key && $('llmKey')) $('llmKey').value = keys.llm_key;
     if (keys?.llm_review_key && $('llmReviewKey')) $('llmReviewKey').value = keys.llm_review_key;
+    if (keys?.binance_key && $('binanceApiKey')) $('binanceApiKey').value = keys.binance_key;
+    if (keys?.binance_secret && $('binanceApiSecret')) $('binanceApiSecret').value = keys.binance_secret;
+    if (keys?.llm_default_provider && $('llmProvider')) $('llmProvider').value = keys.llm_default_provider;
+    if (keys?.llm_review_provider && $('llmReviewProvider')) $('llmReviewProvider').value = keys.llm_review_provider;
+    const mainProvider = (keys?.llm_providers || []).find(p => p.id === ($('llmProvider')?.value || keys.llm_default_provider));
+    const reviewProvider = (keys?.llm_providers || []).find(p => p.id === ($('llmReviewProvider')?.value || keys.llm_review_provider));
+    if (mainProvider?.base_url && $('llmBaseUrl')) $('llmBaseUrl').value = mainProvider.base_url;
+    if (reviewProvider?.base_url && $('llmReviewBaseUrl')) $('llmReviewBaseUrl').value = reviewProvider.base_url;
+    setSelectValue('llmModelSelect', keys?.llm_default_model || mainProvider?.default_model || '');
+    setSelectValue('llmReviewModelSelect', keys?.llm_review_model || reviewProvider?.default_model || '');
     checkKeys();
   } catch {}
+}
+
+function setSelectValue(id, value) {
+  const select = $(id);
+  if (!select || !value) return;
+  if (![...select.options].some(o => o.value === value)) {
+    select.appendChild(new Option(value, value));
+  }
+  select.disabled = false;
+  select.value = value;
+  updateChatModelPill();
+}
+
+function updateChatModelPill() {
+  const pill = $('chatModelPill');
+  if (!pill) return;
+  const provider = $('llmProvider')?.value || 'anthropic';
+  const selected = $('llmModelSelect')?.selectedOptions?.[0];
+  const model = $('llmModelSelect')?.value || '';
+  const label = selected?.textContent || model || provider;
+  pill.textContent = '模型: ' + label;
 }
 
 // ============== HEADER ==============
@@ -199,6 +232,58 @@ async function pollStatus() {
     renderDashKpis(j);
     renderDashSignals(j);
   } catch {}
+}
+
+async function refreshAgentData({ forceHeatmap = false } = {}) {
+  const pk = state.pk || ($('pk')?.value || '').trim();
+  if (forceHeatmap && !pk) { toast('请先在设置中填写钱包私钥', 'err'); return; }
+  const btn = forceHeatmap ? $('btnHmRefresh') : $('btnMarketRefresh');
+  const oldText = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = '获取中...'; }
+  try {
+    if (!forceHeatmap) {
+      const result = await api('POST', '/api/market/refresh', {
+        symbol: (state.lastStatus?.config?.symbol || $('hdrSymbol')?.value || 'BTCUSDT').replace('/', ''),
+        exchange: (state.lastStatus?.config?.exchange || 'binance').toLowerCase(),
+        interval: state.lastStatus?.config?.interval || '1m',
+      });
+      state.lastStatus = result.status || await api('GET', '/api/agent/status');
+      renderHeader(state.lastStatus);
+      renderDashKpis(state.lastStatus);
+      renderDashSignals(state.lastStatus);
+      renderDashCharts();
+      pageHooks.market?.();
+      await Promise.all([loadOrders(), loadEvents()]);
+      toast('已获取交易所实时行情', 'ok');
+      return result;
+    }
+    const body = {
+      pk,
+      manual: true,
+      force_heatmap: !!forceHeatmap,
+      llm_review_provider: $('llmReviewProvider')?.value || undefined,
+      llm_review_api_key: ($('llmReviewKey')?.value || '').trim(),
+      llm_review_model: $('llmReviewModelSelect')?.value || undefined,
+      llm_review_base_url: ($('llmReviewBaseUrl')?.value || '').trim() || undefined,
+    };
+    const result = await api('POST', '/api/agent/tick', body);
+    state.lastStatus = await api('GET', '/api/agent/status');
+    renderHeader(state.lastStatus);
+    renderDashKpis(state.lastStatus);
+    renderDashSignals(state.lastStatus);
+    renderDashCharts();
+    pageHooks.market?.();
+    pageHooks.heatmap?.();
+    await Promise.all([loadOrders(), loadEvents()]);
+    if ($('hmLastUpdate')) $('hmLastUpdate').textContent = new Date().toLocaleString();
+    if ($('sigUpdated')) $('sigUpdated').textContent = new Date().toLocaleTimeString();
+    toast(forceHeatmap ? '已获取最新市场与清算地图数据' : '已获取最新市场数据', 'ok');
+    return result;
+  } catch (e) {
+    toast('获取数据失败: ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  }
 }
 
 // ============== DASHBOARD KPIs ==============
@@ -297,7 +382,10 @@ function renderDashCharts() {
 // ============== HEATMAP PAGE ==============
 function renderHeatmapChart(chart, mode) {
   const snapshots = state.lastStatus?.heatmap?.snapshots || [];
-  if (!snapshots.length) {
+  const latest = snapshots[0] || {};
+  const normalized = latest.liq_map || {};
+  const points = Array.isArray(normalized.points) ? normalized.points : [];
+  if (!points.length) {
     chart.setOption({
       grid: { left: 50, right: 10, top: 10, bottom: 30 },
       xAxis: { type: 'category', data: [], show: false },
@@ -308,26 +396,18 @@ function renderHeatmapChart(chart, mode) {
     }, true);
     return;
   }
-  // Build heatmap data from real snapshots
-  const priceSet = new Set();
-  const timeSet = new Set();
-  snapshots.forEach(s => {
-    if (s.price != null) priceSet.add(+s.price);
-    if (s.timestamp) timeSet.add(s.timestamp);
-  });
-  const prices = [...priceSet].sort((a, b) => a - b);
-  const times = [...timeSet].sort();
-  const data = [];
-  snapshots.forEach(s => {
-    const x = prices.indexOf(+s.price);
-    const y = times.indexOf(s.timestamp);
-    if (x >= 0 && y >= 0) data.push([x, y, +s.volume || +s.density || +s.value || 0]);
-  });
+  const prices = [...new Set(points.map(p => +p.price).filter(Number.isFinite))].sort((a, b) => a - b);
+  const series = [...new Set(points.map(p => p.series || p.side || 'liq'))];
+  const data = points.map(p => {
+    const x = prices.indexOf(+p.price);
+    const y = series.indexOf(p.series || p.side || 'liq');
+    return [x, y, +p.value || 0];
+  }).filter(p => p[0] >= 0 && p[1] >= 0);
   const maxVal = data.length ? Math.max(...data.map(d => d[2])) : 100;
   chart.setOption({
     grid: { left: 50, right: 10, top: 10, bottom: 30 },
     xAxis: { type: 'category', data: prices.map(p => p.toLocaleString()), axisLabel: { color: '#aaa', fontSize: 9, interval: Math.max(0, Math.floor(prices.length / 8)) }, axisLine: { lineStyle: { color: '#333' } } },
-    yAxis: { type: 'category', data: times.map((t, i) => `${i}h`), axisLabel: { color: '#aaa', fontSize: 9 }, axisLine: { lineStyle: { color: '#333' } } },
+    yAxis: { type: 'category', data: series, axisLabel: { color: '#aaa', fontSize: 9 }, axisLine: { lineStyle: { color: '#333' } } },
     visualMap: { show: false, min: 0, max: maxVal || 100, inRange: { color: ['#1a1a4e', '#3d3d9e', '#6c5ce7', '#f39c12', '#e74c3c'] } },
     series: [{ type: 'heatmap', data, emphasis: { itemStyle: { borderColor: '#fff', borderWidth: 1 } } }],
     graphic: [],
@@ -339,6 +419,7 @@ pageHooks.heatmap = function () {
   if (!state.keysReady) return;
   const chart = getChart('hmDetailChart');
   if (chart) renderHeatmapChart(chart, 'full');
+  renderHeatmapZones();
   const corrChart = getChart('hmCorrChart');
   if (corrChart) {
     const lastPrice = state.lastStatus?.last_snapshot?.price || state.lastStatus?.last_signal?.price;
@@ -369,16 +450,46 @@ pageHooks.heatmap = function () {
   }
 };
 
+function renderHeatmapZones() {
+  const body = $('hmZonesBody');
+  if (!body) return;
+  const snapshot = state.lastStatus?.heatmap?.snapshots?.[0] || {};
+  const clusters = snapshot.heatmap?.clusters || [];
+  if (!clusters.length) {
+    body.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:18px">暂无真实清算地图聚类数据</td></tr>';
+    return;
+  }
+  body.innerHTML = clusters.slice(0, 8).map(c => {
+    const tier = c.leverage_tier || 'low';
+    const color = tier === 'high' ? 'var(--red)' : tier === 'medium' ? 'var(--amber)' : 'var(--text-3)';
+    const impact = c.side === 'above' ? '上方阻力/空头清算带' : c.side === 'below' ? '下方支撑/多头清算带' : '现价附近清算带';
+    return `<tr>
+      <td style="font-weight:600">${fmt.price(c.low, 0)} - ${fmt.price(c.high, 0)}</td>
+      <td><span style="color:${color}">● ${escapeHtml(tier)}</span></td>
+      <td>${impact}</td>
+      <td style="color:var(--text-2)">score ${fmt.num(c.score, 2)} / ${fmt.num(c.volume, 0)}</td>
+    </tr>`;
+  }).join('');
+}
+
 // ============== MARKET PAGE ==============
 pageHooks.market = function () {
   if (!state.keysReady) return;
+  const snap = state.lastStatus?.last_snapshot || {};
+  const market = snap.market || {};
+  if ($('mktBtcPrice') && (snap.symbol || '').startsWith('BTC')) $('mktBtcPrice').textContent = '$' + fmt.price(snap.price, 2);
+  if ($('mktBtcChg')) $('mktBtcChg').textContent = market.change_24h_pct == null ? '—' : ((+market.change_24h_pct >= 0 ? '+' : '') + fmt.pct(market.change_24h_pct));
+  if ($('mktVol')) $('mktVol').textContent = market.volume_24h_quote ? fmt.num(+market.volume_24h_quote / 1e9, 2) : '—';
+  if ($('mktVolatility')) {
+    const high = +market.high_24h || 0, low = +market.low_24h || 0, price = +snap.price || 0;
+    $('mktVolatility').textContent = price && high && low ? fmt.num(((high - low) / price) * 100, 2) : '—';
+  }
   const priceChart = getChart('mktPriceChart');
   if (priceChart) {
-    const lastPrice = state.lastStatus?.last_snapshot?.price || state.lastStatus?.last_signal?.price;
-    if (lastPrice) {
-      const center = +lastPrice;
-      const now = Date.now();
-      const data = [[now, center]];
+    const klines = market.klines || [];
+    const lastPrice = snap.price || state.lastStatus?.last_signal?.price;
+    if (klines.length || lastPrice) {
+      const data = klines.length ? klines.map(k => [k.close_time || k.open_time, +k.close]) : [[Date.now(), +lastPrice]];
       priceChart.setOption({
         grid: { left: 55, right: 14, top: 14, bottom: 28 },
         tooltip: { trigger: 'axis', ...TT },
@@ -415,15 +526,14 @@ pageHooks.market = function () {
 
   const flowChart = getChart('mktFlowChart');
   if (flowChart) {
-    const cats = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'];
+    const cats = [snap.symbol || '—'];
     flowChart.setOption({
       grid: { left: 40, right: 14, top: 10, bottom: 28 },
       tooltip: { trigger: 'axis', ...TT },
       xAxis: { type: 'category', data: cats, ...AXIS },
       yAxis: { type: 'value', ...AXIS },
       series: [
-        { type: 'bar', data: [128, 86, 42, 18, 12], itemStyle: { color: '#00b894' }, barWidth: '35%' },
-        { type: 'bar', data: [-86, -52, -28, -14, -8], itemStyle: { color: '#e74c3c' }, barWidth: '35%' },
+        { type: 'bar', data: [+(market.volume_24h_quote || 0)], itemStyle: { color: '#00b894' }, barWidth: '35%' },
       ],
     }, true);
   }
@@ -445,15 +555,19 @@ pageHooks.evolution = function () {
   if (!state.keysReady) return;
   const evoChart = getChart('evoChart');
   if (evoChart) {
-    const now = Date.now();
-    let v = 0;
-    const data = Array.from({ length: 47 }, (_, i) => { v += Math.random() * 2 - 0.3; return [i + 1, Math.max(0, v)]; });
+    const closed = (state.lastOrders || []).filter(o => (o.status || '').toUpperCase() === 'CLOSED').slice().reverse();
+    let equity = +(state.lastStatus?.config?.paper_seed_usd || 100000);
+    const data = closed.map((o, i) => {
+      equity += +(o.pnl_usd || 0);
+      return [i + 1, equity];
+    });
     evoChart.setOption({
       grid: { left: 40, right: 14, top: 14, bottom: 28 },
       tooltip: { trigger: 'axis', ...TT },
-      xAxis: { type: 'value', name: '代数', ...AXIS, min: 1, max: 47 },
-      yAxis: { type: 'value', ...AXIS, axisLabel: { ...AXIS.axisLabel, formatter: v => v.toFixed(0) + '%' } },
+      xAxis: { type: 'value', name: '交易', ...AXIS, min: 1 },
+      yAxis: { type: 'value', ...AXIS },
       series: [{ type: 'line', smooth: true, showSymbol: false, data, lineStyle: { color: '#6c5ce7', width: 2 }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(108,92,231,.2)' }, { offset: 1, color: 'rgba(108,92,231,0)' }] } } }],
+      graphic: data.length ? [] : [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无真实 paper 交易样本', fontSize: 13, fill: '#9ea2ab', fontFamily: 'inherit' } }],
     }, true);
   }
 
@@ -571,6 +685,8 @@ function wireChat() {
   const input = $('chatInput');
   const btn = $('btnChatSend');
   if (!input || !btn) return;
+  updateChatModelPill();
+  resetChatMessages();
 
   const send = async () => {
     const text = input.value.trim();
@@ -597,11 +713,19 @@ function wireChat() {
 
   btn.addEventListener('click', send);
   input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+  $('btnChatClear')?.addEventListener('click', resetChatMessages);
 
   // Quick prompts
   qsa('#page-chat button[style*="text-align:left"]').forEach(b => {
     b.addEventListener('click', () => { input.value = b.textContent.replace(/^[^\s]+\s/, ''); input.focus(); });
   });
+}
+
+function resetChatMessages() {
+  const container = $('chatMessages');
+  if (!container) return;
+  container.innerHTML = '';
+  appendChatMsg('agent', CHAT_WELCOME);
 }
 
 function appendChatMsg(role, text) {
@@ -626,13 +750,14 @@ pageHooks.strategy = function () {
   if (!state.keysReady) return;
   const chart = getChart('strategyPreviewChart');
   if (chart) {
-    let v = 100;
-    const data = Array.from({ length: 30 }, (_, i) => { v += Math.random() * 4 - 1.5; return [i + 1, v]; });
+    const klines = state.lastStatus?.last_snapshot?.market?.klines || [];
+    const data = klines.map((k, i) => [i + 1, +k.close]);
     chart.setOption({
       grid: { left: 40, right: 14, top: 10, bottom: 24 },
       xAxis: { type: 'value', show: false },
       yAxis: { type: 'value', ...AXIS },
       series: [{ type: 'line', smooth: true, showSymbol: false, data, lineStyle: { color: '#6c5ce7', width: 2 }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(108,92,231,.15)' }, { offset: 1, color: 'rgba(108,92,231,0)' }] } } }],
+      graphic: data.length ? [] : [{ type: 'text', left: 'center', top: 'middle', style: { text: '点击市场页获取实时行情后显示', fontSize: 13, fill: '#9ea2ab', fontFamily: 'inherit' } }],
     }, true);
   }
 };
@@ -836,6 +961,7 @@ async function connectLLM() {
         if (ctxInput && ctx) { ctxInput.value = ctx; ctxInput.disabled = false; }
       };
       select.dispatchEvent(new Event('change'));
+      updateChatModelPill();
     }
     const ctxInput = $('llmContextLength');
     if (ctxInput) ctxInput.disabled = false;
@@ -1610,8 +1736,12 @@ async function loadLogs() {
       const kindColor = e.kind === 'error' ? 'var(--red)' : e.kind === 'signal' ? 'var(--green)' : e.kind === 'order' ? 'var(--purple)' : 'var(--text-3)';
       const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
       return `<div style="padding:6px 8px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:flex-start">
-        <span style="color:${kindColor};font-weight:600;min-width:60px;font-size:10.5px">[${e.kind || '-'}]</span>
-        <span style="flex:1;color:var(--text);word-break:break-all">${e.message || ''}</span>
+        <span style="color:${kindColor};font-weight:600;min-width:78px;font-size:10.5px">[${e.level || 'info'}:${e.kind || '-'}]</span>
+        <span style="flex:1;color:var(--text);word-break:break-all">
+          <span style="font-family:var(--mono);color:var(--text-3)">${escapeHtml(e.module || 'agent')}.${escapeHtml(e.action || '-')}</span>
+          ${escapeHtml(e.message || '')}
+          ${e.data && Object.keys(e.data).length ? `<pre style="margin:4px 0 0;color:var(--text-2);font-size:10px;white-space:pre-wrap">${escapeHtml(JSON.stringify(e.data, null, 2))}</pre>` : ''}
+        </span>
         <span style="color:var(--text-3);font-size:10px;white-space:nowrap">${ts}</span>
       </div>`;
     }).join('');
@@ -1684,11 +1814,14 @@ async function bootstrap() {
   // Wire LLM connect buttons
   $('btnLlmConnect')?.addEventListener('click', connectLLM);
   $('btnLlmReviewConnect')?.addEventListener('click', connectLLMReview);
+  $('llmProvider')?.addEventListener('change', updateChatModelPill);
+  $('llmModelSelect')?.addEventListener('change', updateChatModelPill);
   $('btnRefreshUsage')?.addEventListener('click', refreshUsageStats);
   $('btnSaveSettings')?.addEventListener('click', saveSettings);
   $('btnLlmApply')?.addEventListener('click', applyLlmModel);
   $('btnLlmReviewApply')?.addEventListener('click', applyLlmReviewModel);
   refreshUsageStats();
+  updateChatModelPill();
 
   // Settings tab switching
   qsa('.stab-item', $('settingsNav')).forEach(tab => {
@@ -1755,6 +1888,8 @@ async function bootstrap() {
   // Wire pipeline
   $('btnPipelineGenerate')?.addEventListener('click', pipelineGenerate);
   $('btnPipelineRefreshHistory')?.addEventListener('click', pipelineLoadHistory);
+  $('btnMarketRefresh')?.addEventListener('click', () => refreshAgentData());
+  $('btnHmRefresh')?.addEventListener('click', () => refreshAgentData({ forceHeatmap: true }));
 
   // Load data only if keys are ready
   if (state.keysReady) {
@@ -1794,6 +1929,8 @@ async function saveSettings() {
   const llmReviewModel = $('llmReviewModelSelect')?.value || '';
   const llmReviewContextLength = $('llmReviewContextLength')?.value || '';
   const llmReviewBaseUrl = ($('llmReviewBaseUrl')?.value || '').trim();
+  const binanceKey = ($('binanceApiKey')?.value || '').trim();
+  const binanceSecret = ($('binanceApiSecret')?.value || '').trim();
 
   // Build config payload for strategy config endpoint
   const config = {};
@@ -1812,6 +1949,19 @@ async function saveSettings() {
   config.llm_review_enabled = !!$('autoLlmReview')?.checked;
 
   try {
+    await saveDesktopSettings({
+      pk,
+      llmProvider,
+      llmKey,
+      llmModel,
+      llmBaseUrl,
+      llmReviewProvider,
+      llmReviewKey,
+      llmReviewModel,
+      llmReviewBaseUrl,
+      binanceKey,
+      binanceSecret,
+    });
     await api('POST', '/api/agent/config', config);
     state.pk = pk;
     state.llmKey = llmKey;
@@ -1822,10 +1972,65 @@ async function saveSettings() {
   }
 }
 
+async function saveDesktopSettings(settings) {
+  if (!window.desktop) return;
+  if (window.desktop.saveWallet) {
+    await window.desktop.saveWallet(settings.pk || '');
+  }
+  if (!window.desktop.saveSettings) return;
+  let existing = {};
+  try {
+    existing = window.desktop.getSettings ? await window.desktop.getSettings() : {};
+  } catch {}
+  const providers = [...(existing.llm_providers || [])];
+  upsertProvider(providers, {
+    id: settings.llmProvider,
+    api_key: settings.llmKey,
+    base_url: settings.llmBaseUrl,
+    default_model: settings.llmModel,
+  });
+  upsertProvider(providers, {
+    id: settings.llmReviewProvider,
+    api_key: settings.llmReviewKey,
+    base_url: settings.llmReviewBaseUrl,
+    default_model: settings.llmReviewModel,
+  });
+  await window.desktop.saveSettings({
+    llm_providers: providers,
+    llm_default_provider: settings.llmProvider,
+    llm_default_model: settings.llmModel,
+    llm_review_provider: settings.llmReviewProvider,
+    llm_review_model: settings.llmReviewModel,
+    binance_key: settings.binanceKey || '',
+    binance_secret: settings.binanceSecret || '',
+  });
+}
+
+function upsertProvider(providers, patch) {
+  if (!patch.id) return;
+  const current = providers.find(p => p.id === patch.id);
+  const next = {
+    ...(current || {}),
+    id: patch.id,
+    name: providerName(patch.id),
+  };
+  if ('api_key' in patch) next.api_key = patch.api_key || '';
+  if ('base_url' in patch) next.base_url = patch.base_url || '';
+  if ('default_model' in patch) next.default_model = patch.default_model || '';
+  if (current) Object.assign(current, next);
+  else providers.push(next);
+}
+
+function providerName(id) {
+  const opt = [...($('llmProvider')?.options || []), ...($('llmReviewProvider')?.options || [])].find(o => o.value === id);
+  return opt?.textContent || id;
+}
+
 function applyLlmModel() {
   const model = $('llmModelSelect')?.value || '';
   const provider = $('llmProvider')?.value || '';
   if (!model) { toast('请先选择模型', 'err'); return; }
+  updateChatModelPill();
   toast(`已选择主模型: ${model} (${provider})`, 'ok');
 }
 

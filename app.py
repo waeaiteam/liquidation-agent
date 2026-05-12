@@ -16,18 +16,21 @@ from flask_cors import CORS
 
 from providers import LLM_PROVIDERS
 from services.agent_chat import chat_with_agent
+from services.backtest import run_simple_backtest
 from services.claw_docs import CLAW402_COINANK_ENDPOINTS, CLAW402_SUMMARY
 from services.coinank import create_client, fetch_market_snapshot, unwrap_data
 from services.evolution import EvolutionEngine
 from services.heatmap_manager import HeatmapSnapshotManager
-from services.llm import analyze_with_llm
+from services.liquidation_maps import normalize_liquidation_map
+from services.llm import _as_dict, analyze_with_llm
+from services.market_data import MarketDataError, market_data_service
 from services.strategy_agent import apply_llm_review, review_trade_with_llm
 from services.x_sentiment import get_service as get_x_service
 from services.xai_chat import get_chat_service as get_xai_chat
 from services.x_pipeline import get_pipeline_service as get_x_pipeline
 from services.x_poster import get_poster_service as get_x_poster
 from state import AgentState
-from strategy.models import StrategyConfig
+from strategy.models import MarketSnapshot, StrategyConfig
 from strategy.signals import LiquidationContrarianSignalEngine
 from trading.execution import BinanceExecutionAdapter, PaperExecutionAdapter
 from trading.risk import RiskManager
@@ -107,6 +110,29 @@ def _normalize_market_payload(payload: dict[str, Any]) -> tuple[str, str, str, s
     return coin, symbol, exchange, interval, size or 24, ""
 
 
+def _snapshot_from_market(config: StrategyConfig, market: dict[str, Any]) -> MarketSnapshot:
+    symbol = str(market.get("symbol") or config.symbol).upper()
+    coin = symbol[:-4] if symbol.endswith("USDT") else config.coin
+    return MarketSnapshot(
+        coin=coin,
+        symbol=symbol,
+        exchange=str(market.get("exchange") or config.exchange).lower(),
+        interval=config.interval,
+        price=float(market.get("price") or 0),
+        oi=[{"symbol": symbol, "exchange": config.exchange, "openInterest": market.get("open_interest", 0)}],
+        funding=[{"symbol": symbol, "exchange": config.exchange, "rate": market.get("funding_rate", 0)}],
+        market=market,
+        data_warnings=[],
+    )
+
+
+def _apply_market_to_snapshot(snapshot: MarketSnapshot, market: dict[str, Any]):
+    snapshot.price = float(market.get("price") or snapshot.price or 0)
+    snapshot.funding = [{"symbol": snapshot.symbol, "exchange": snapshot.exchange, "rate": market.get("funding_rate", 0)}]
+    snapshot.oi = [{"symbol": snapshot.symbol, "exchange": snapshot.exchange, "openInterest": market.get("open_interest", 0)}]
+    snapshot.market = market
+
+
 @app.route("/")
 def index():
     return render_template("index.html", providers=LLM_PROVIDERS)
@@ -174,9 +200,12 @@ def llm_models():
         return jsonify({"error": str(exc)}), 500
 
     # Parse response (OpenAI format: {data: [{id, ...}]})
-    raw_models = data.get("data") or data.get("models") or []
-    if isinstance(data, list):
+    if isinstance(data, dict):
+        raw_models = data.get("data") or data.get("models") or []
+    elif isinstance(data, list):
         raw_models = data
+    else:
+        return _json_error(f"Unexpected models response JSON: {type(data).__name__}", 502)
 
     models = []
     for m in raw_models:
@@ -262,13 +291,13 @@ def market_overview():
     otherwise returns derived values from agent's latest snapshot."""
     coins_param = request.args.get("coins", "BTC,ETH,SOL,BNB,XRP,DOGE")
     coins = [c.strip().upper() for c in coins_param.split(",") if c.strip()]
-    snapshot = agent_state.last_snapshot or {}
+    snapshot = _as_dict(agent_state.last_snapshot)
     cfg = agent_state.config
     primary_coin = (cfg.coin or "BTC").upper()
     primary_price = snapshot.get("price") or 0
     primary_funding = snapshot.get("funding_rate") or 0
     primary_oi = snapshot.get("open_interest") or snapshot.get("oi") or 0
-    # Build a list with the primary coin from cached snapshot, others as stubs (UI shows '—' if missing)
+    # Build only from cached real exchange data; unknown symbols stay null.
     result = []
     for c in coins:
         if c == primary_coin and primary_price:
@@ -283,20 +312,50 @@ def market_overview():
         else:
             result.append({
                 "symbol": c,
-                "price": 0,
-                "change_24h": 0,
-                "volume_24h": 0,
-                "oi": 0,
-                "funding_rate": 0,
+                "price": None,
+                "change_24h": None,
+                "volume_24h": None,
+                "oi": None,
+                "funding_rate": None,
             })
     return jsonify({"coins": result, "primary": primary_coin})
+
+
+@app.route("/api/market/refresh", methods=["POST"])
+def market_refresh():
+    payload = request.get_json() or {}
+    try:
+        config = agent_state.config
+        if payload.get("config"):
+            config = agent_state.update_config(payload.get("config") or {})
+        symbol = str(payload.get("symbol") or config.symbol).upper().replace("/", "")
+        exchange = str(payload.get("exchange") or config.exchange).lower()
+        interval = str(payload.get("interval") or config.interval)
+        market = market_data_service.fetch_snapshot(symbol, exchange=exchange, interval=interval)
+        snapshot = _snapshot_from_market(config, market)
+        agent_state.record_snapshot(snapshot)
+        paper_executor.load_orders(agent_state.orders)
+        paper_executor.mark_to_market(snapshot.symbol, snapshot.price)
+        if paper_executor.broker.orders:
+            agent_state.replace_orders(paper_executor.broker.orders)
+        agent_state.add_event("market", "exchange market data refreshed", {
+            "source": market.get("source"),
+            "symbol": symbol,
+            "exchange": exchange,
+            "price": market.get("price"),
+            "klines": len(market.get("klines") or []),
+        }, module="market_data", action="refresh")
+        return jsonify({"market": market, "snapshot": snapshot.to_dict(), "status": agent_state.status()})
+    except MarketDataError as exc:
+        agent_state.add_event("error", str(exc), {"symbol": payload.get("symbol"), "exchange": payload.get("exchange")}, level="error", module="market_data", action="refresh")
+        return jsonify({"error": str(exc)}), 502
 
 
 @app.route("/api/market/sentiment")
 def market_sentiment():
     """Market fear & greed proxy. Derived from agent's last signal direction + heatmap intensity if available."""
-    snapshot = agent_state.last_snapshot or {}
-    sig = agent_state.last_signal or {}
+    snapshot = _as_dict(agent_state.last_snapshot)
+    sig = _as_dict(agent_state.last_signal)
     # Default neutral
     score = 50
     action = (sig.get("action") if isinstance(sig, dict) else None) or "wait"
@@ -319,42 +378,21 @@ def market_sentiment():
 
 @app.route("/api/market/volatility")
 def market_volatility():
-    """Volatility ranking. Derived from price + funding rate if backend has data, otherwise returns realistic stub data."""
-    # Stub: representative volatility values for top coins
-    fallback = [
-        {"symbol": "DOGE", "value": 83.15, "change": 5.24, "color": "#cda44d"},
-        {"symbol": "SOL", "value": 78.45, "change": 3.18, "color": "#9945ff"},
-        {"symbol": "AVAX", "value": 74.28, "change": 2.46, "color": "#e84142"},
-        {"symbol": "ETH", "value": 62.31, "change": 1.87, "color": "#627eea"},
-        {"symbol": "XRP", "value": 56.73, "change": 0.92, "color": "#23292f"},
-    ]
-    return jsonify({"coins": fallback})
+    snapshot = _as_dict(agent_state.last_snapshot)
+    if not snapshot:
+        return jsonify({"coins": [], "error": "No real exchange market data loaded yet"}), 404
+    price = float(snapshot.get("price") or 0)
+    return jsonify({"coins": [{"symbol": snapshot.get("symbol"), "value": price, "change": None, "source": "exchange"}]})
 
 
 @app.route("/api/market/sectors")
 def market_sectors():
-    """Sector heat map. Stub data — would call external data source in production."""
-    sectors = [
-        {"name": "Meme", "value": 86},
-        {"name": "Solana", "value": 78},
-        {"name": "AI", "value": 72},
-        {"name": "Layer 2", "value": 63},
-        {"name": "DeFi", "value": 58},
-    ]
-    return jsonify({"sectors": sectors})
+    return jsonify({"sectors": [], "error": "No sector data provider configured"}), 501
 
 
 @app.route("/api/market/flows")
 def market_flows():
-    """Exchange capital flows (24h). Stub data."""
-    flows = [
-        {"name": "Binance",  "net": 1.28,    "in": 15.62,  "out": 14.34, "delta": 12.54},
-        {"name": "OKX",      "net": -342.21, "in": 4.21,   "out": 4.55,  "delta": -8.21},
-        {"name": "Bybit",    "net": 215.27,  "in": 3.12,   "out": 2.90,  "delta": 7.42},
-        {"name": "Coinbase", "net": 86.31,   "in": 1.28,   "out": 1.19,  "delta": 4.18},
-        {"name": "Kraken",   "net": -54.18,  "in": 632.41, "out": 686.59,"delta": -7.89},
-    ]
-    return jsonify({"flows": flows})
+    return jsonify({"flows": [], "error": "No exchange flow data provider configured"}), 501
 
 
 # ===================== X (Twitter) sentiment =====================
@@ -421,6 +459,9 @@ def x_analyze():
         "overview": data["sentiment"],
         "trending": data["trending"][:5],
         "top_tweets": data["top_tweets"][:5],
+        "kol_views": data.get("kol_views", []),
+        "dimensions": data.get("dimensions", {}),
+        "actionable_signals": data.get("actionable_signals", []),
         "narrative": data.get("narrative", ""),
         "analysis": data.get("narrative", ""),  # alias for frontend compat
         "meta": data.get("meta", {}),
@@ -677,12 +718,18 @@ def liqmap():
     payload = request.get_json() or {}
     pk = _get_private_key(payload)
     coin = str(payload.get("coin", "BTC")).strip().upper()
+    symbol = str(payload.get("symbol") or f"{coin}USDT").strip().upper().replace("/", "")
+    exchange = str(payload.get("exchange") or agent_state.config.exchange).strip().lower()
     interval = str(payload.get("interval", "1h")).strip()
 
     if not pk:
         return _json_error("Enter wallet key")
     if not SYMBOL_RE.match(coin):
         return _json_error("Invalid coin")
+    if not SYMBOL_RE.match(symbol):
+        return _json_error("Invalid symbol")
+    if not EXCHANGE_RE.match(exchange):
+        return _json_error("Invalid exchange")
     if not INTERVAL_RE.match(interval):
         return _json_error("Invalid interval")
 
@@ -691,13 +738,31 @@ def liqmap():
         return _json_error(err)
 
     try:
-        raw = client.coinank.liquidation.agg_liq_map(base_coin=coin, interval=interval)
-        data = unwrap_data(raw, {}) or {}
-        return jsonify({"wallet": addr, "agg_map": data})
+        raw_liq = client.coinank.liquidation.liq_map(symbol=symbol, exchange=exchange, interval=interval)
+        raw_heat = client.coinank.liquidation.heat_map(exchange=exchange, symbol=symbol, interval=interval)
+        normalized = normalize_liquidation_map(raw_heat if raw_heat else raw_liq, symbol=symbol, exchange=exchange, interval=interval)
+        if not normalized.get("has_data"):
+            normalized = normalize_liquidation_map(raw_liq, symbol=symbol, exchange=exchange, interval=interval)
+        snapshot = {
+            "symbol": symbol,
+            "coin": coin,
+            "exchange": exchange,
+            "interval": interval,
+            "timestamp": time.time(),
+            "epoch": time.time(),
+            "price": _as_dict(agent_state.last_snapshot).get("price", 0),
+            "liq_map": normalized,
+            "heatmap": heatmap_manager.analyzer.analyze(normalized, float(_as_dict(agent_state.last_snapshot).get("price") or 0), symbol, agent_state.config.heatmap_bucket_pct, agent_state.config.min_heatmap_cluster_score, agent_state.config.max_heatmap_distance_pct, agent_state.config.allowed_heatmap_leverage_tiers),
+            "cost_usdc": agent_state.config.liq_map_cost_usdc,
+        }
+        agent_state.record_heatmap_snapshot(snapshot, agent_state.config.max_heatmap_snapshots)
+        return jsonify({"wallet": addr, "liq_map": normalized, "raw_liq_map": raw_liq, "raw_heat_map": raw_heat, "heatmap": snapshot["heatmap"]})
     except Claw402Error as exc:
-        return jsonify({"wallet": addr, "error": f"Payment failed: {exc}"})
+        agent_state.add_event("error", f"Payment failed: {exc}", {"symbol": symbol, "exchange": exchange, "interval": interval}, level="error", module="claw402", action="liqmap")
+        return jsonify({"wallet": addr, "error": f"Payment failed: {exc}"}), 402
     except Exception as exc:
-        return jsonify({"wallet": addr, "error": str(exc)})
+        agent_state.add_event("error", str(exc), {"symbol": symbol, "exchange": exchange, "interval": interval}, level="error", module="claw402", action="liqmap")
+        return jsonify({"wallet": addr, "error": str(exc)}), 500
 
 
 @app.route("/api/agent/status")
@@ -724,10 +789,34 @@ def agent_evolve_apply():
     return jsonify(result)
 
 
+@app.route("/api/backtest/run", methods=["POST"])
+def backtest_run():
+    payload = request.get_json() or {}
+    config = agent_state.config
+    try:
+        market = _as_dict(_as_dict(agent_state.last_snapshot).get("market"))
+        klines = payload.get("klines") if isinstance(payload.get("klines"), list) else market.get("klines", [])
+        result = run_simple_backtest(
+            klines,
+            symbol=str(payload.get("symbol") or config.symbol).upper().replace("/", ""),
+            seed_usd=float(payload.get("seed_usd") or config.paper_seed_usd),
+            notional_usd=float(payload.get("notional_usd") or config.notional_usd),
+            leverage=int(payload.get("leverage") or config.leverage),
+            stop_loss_pct=float(payload.get("stop_loss_pct") or config.stop_loss_pct / 100),
+            take_profit_pct=float(payload.get("take_profit_pct") or config.take_profit_pct / 100),
+        )
+        agent_state.add_event("backtest", "backtest completed", result["summary"], module="backtest", action="run")
+        return jsonify(result)
+    except Exception as exc:
+        agent_state.add_event("error", str(exc), {}, level="error", module="backtest", action="run")
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/agent/chat", methods=["POST"])
 def agent_chat():
     payload = request.get_json() or {}
     try:
+        config = agent_state.config
         api_routes = [
             {"method": "POST", "path": "/api/wallet", "purpose": "connect wallet and derive address"},
             {"method": "POST", "path": "/api/liquidation", "purpose": "fetch basic liquidation and market data"},
@@ -748,12 +837,12 @@ def agent_chat():
             "orders": agent_state.orders[:10],
             "events": agent_state.events[:20],
             "heatmap": agent_state.heatmap_status(),
-            "custom_base_url": payload.get("custom_base_url"),
+            "custom_base_url": payload.get("custom_base_url") or config.llm_base_url,
         }
         answer = chat_with_agent(
-            provider_id=payload.get("provider", "anthropic"),
+            provider_id=payload.get("provider") or config.llm_provider or "anthropic",
             api_key=(payload.get("api_key") or "").strip(),
-            model=(payload.get("model") or "").strip(),
+            model=(payload.get("model") or config.llm_model or "").strip(),
             question=(payload.get("question") or "").strip(),
             context=context,
         )
@@ -868,8 +957,10 @@ def _worker_loop():
 
 def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: bool = False) -> tuple[dict[str, Any], int]:
     payload = payload or {}
-    if not tick_lock.acquire(blocking=False):
-        return {"error": "agent tick already running"}, 409
+    wait_for_tick = bool(payload.get("manual") or payload.get("force_heatmap"))
+    acquired = tick_lock.acquire(timeout=60) if wait_for_tick else tick_lock.acquire(blocking=False)
+    if not acquired:
+        return {"error": "agent tick already running", "phase": agent_state.agent_phase}, 409
     try:
         config = agent_state.config
         if payload.get("config"):
@@ -883,9 +974,21 @@ def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: b
             return {"error": err}, 400
 
         agent_state.set_phase("SCANNING")
+        market = market_data_service.fetch_snapshot(config.symbol, exchange=config.exchange, interval=config.interval)
         snapshot = fetch_market_snapshot(client, config.coin, config.symbol, config.exchange, config.interval, config.size, include_map=False)
+        _apply_market_to_snapshot(snapshot, market)
         snapshot.wallet = addr
         agent_state.record_snapshot(snapshot)
+        paper_executor.load_orders(agent_state.orders)
+        paper_executor.mark_to_market(snapshot.symbol, snapshot.price)
+        if paper_executor.broker.orders:
+            agent_state.replace_orders(paper_executor.broker.orders)
+        agent_state.add_event("market", "exchange market data loaded", {
+            "source": market.get("source"),
+            "symbol": config.symbol,
+            "exchange": config.exchange,
+            "price": snapshot.price,
+        }, module="market_data", action="tick")
 
         force_heatmap = bool(payload.get("force_heatmap"))
         candidate = signal_engine.generate(snapshot, config, require_heatmap=False)
@@ -941,6 +1044,8 @@ def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: b
             executor = paper_executor if config.mode == "paper" else binance_executor
             order = executor.execute(signal, decision, config)
             agent_state.record_order(order)
+            if config.mode == "paper":
+                agent_state.replace_orders(paper_executor.broker.orders)
         elif signal.valid:
             agent_state.set_phase("SIGNAL_REJECTED", {"reasons": decision.reasons})
         elif not liquidation_event:

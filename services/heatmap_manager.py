@@ -3,7 +3,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from services.coinank import unwrap_data
+from services.llm import _as_dict
+
+from services.liquidation_maps import normalize_liquidation_map
 from strategy.heatmap import HeatmapClusterAnalyzer
 from strategy.models import StrategyConfig, utc_now
 
@@ -34,8 +36,11 @@ class HeatmapSnapshotManager:
             return self._stale(latest, reason, budget_blocked=True)
 
         try:
-            raw = client.coinank.liquidation.agg_liq_map(base_coin=config.coin, interval=config.interval)
-            liq_map = unwrap_data(raw, {}) or {}
+            raw_liq = client.coinank.liquidation.liq_map(symbol=config.symbol, exchange=config.exchange, interval=config.interval)
+            raw_heat = client.coinank.liquidation.heat_map(exchange=config.exchange, symbol=config.symbol, interval=config.interval)
+            liq_map = normalize_liquidation_map(raw_heat if raw_heat else raw_liq, symbol=config.symbol, exchange=config.exchange, interval=config.interval)
+            if not liq_map.get("has_data"):
+                liq_map = normalize_liquidation_map(raw_liq, symbol=config.symbol, exchange=config.exchange, interval=config.interval)
         except Exception as exc:
             if latest and latest_age <= config.max_heatmap_snapshot_age_seconds:
                 return self._result(latest, f"liq map refresh failed, using cached snapshot: {exc}", from_cache=True, refresh_error=str(exc))
@@ -71,6 +76,8 @@ class HeatmapSnapshotManager:
         return self._result(latest, "liq map refreshed but unchanged", from_cache=True, refreshed=True, deduped=True, change_ratio=change_ratio)
 
     def _change_ratio(self, previous: dict[str, Any] | None, current: dict[str, Any]) -> float:
+        previous = _as_dict(previous)
+        current = _as_dict(current)
         if not previous:
             return 1.0
         prev_map = previous.get("liq_map") or {}
@@ -85,6 +92,17 @@ class HeatmapSnapshotManager:
         return round(diff / max(base, 1), 6)
 
     def _volume_by_price(self, liq_map: dict[str, Any]) -> dict[float, float]:
+        liq_map = _as_dict(liq_map)
+        if isinstance(liq_map.get("points"), list):
+            volumes: dict[float, float] = {}
+            for point in liq_map["points"]:
+                point = _as_dict(point)
+                price = self._to_float(point.get("price"))
+                volume = self._to_float(point.get("value"))
+                if price is None or volume is None or volume <= 0:
+                    continue
+                volumes[price] = volumes.get(price, 0.0) + volume
+            return volumes
         prices = [self._to_float(value) for value in (liq_map.get("prices") or [])]
         volumes: dict[float, float] = {}
         for key, values in liq_map.items():
@@ -104,6 +122,7 @@ class HeatmapSnapshotManager:
             return None
 
     def _result(self, snapshot: dict[str, Any], reason: str, **flags) -> dict[str, Any]:
+        snapshot = _as_dict(snapshot)
         heatmap = snapshot.get("heatmap") or {}
         return {
             "usable": bool(heatmap.get("has_data")),
@@ -116,12 +135,13 @@ class HeatmapSnapshotManager:
         }
 
     def _stale(self, snapshot: dict[str, Any] | None, reason: str, **flags) -> dict[str, Any]:
+        snapshot_dict = _as_dict(snapshot)
         return {
             "usable": False,
             "reason": reason,
             "snapshot": snapshot,
-            "liq_map": (snapshot or {}).get("liq_map") or {},
-            "heatmap": (snapshot or {}).get("heatmap") or {},
-            "age_seconds": None if not snapshot else max(0, time.time() - float(snapshot.get("epoch") or time.time())),
+            "liq_map": snapshot_dict.get("liq_map") or {},
+            "heatmap": snapshot_dict.get("heatmap") or {},
+            "age_seconds": None if not snapshot_dict else max(0, time.time() - float(snapshot_dict.get("epoch") or time.time())),
             **flags,
         }

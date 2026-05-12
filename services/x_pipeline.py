@@ -21,6 +21,7 @@ except ImportError:
     anthropic = None
 
 from providers import LLM_PROVIDERS
+from services.llm import _as_dict, _openai_response_text
 
 
 PIPELINE_SYSTEM_PROMPT = """你是加密货币交易策略推文生成器。你的任务是根据实时市场数据、策略信号和 X 社区情绪，生成高质量的候选推文。
@@ -177,10 +178,7 @@ class TweetPipelineService:
             raise RuntimeError(f"LLM API HTTP {exc.code}: {detail}") from exc
         except URLError as exc:
             raise RuntimeError(f"LLM API request failed: {exc.reason}") from exc
-        choices = data.get("choices") or []
-        if not choices:
-            return json.dumps(data, ensure_ascii=False)
-        return (choices[0].get("message") or {}).get("content", "").strip()
+        return _openai_response_text(data)
 
     def get_history(self, limit: int = 20) -> list[dict[str, Any]]:
         return [
@@ -207,7 +205,7 @@ class TweetPipelineService:
     def _collect_context(self, agent_state: Any, x_sentiment_service: Any) -> dict[str, Any]:
         context: dict[str, Any] = {"market": {}, "signal": {}, "sentiment": {}}
 
-        snapshot = getattr(agent_state, "last_snapshot", None) or {}
+        snapshot = _as_dict(getattr(agent_state, "last_snapshot", None))
         if snapshot:
             context["market"] = {
                 "symbol": snapshot.get("symbol", ""),
@@ -216,8 +214,8 @@ class TweetPipelineService:
                 "open_interest": snapshot.get("open_interest") or snapshot.get("oi", 0),
             }
 
-        last_signal = getattr(agent_state, "last_signal", None) or {}
-        last_risk = getattr(agent_state, "last_risk", None) or {}
+        last_signal = _as_dict(getattr(agent_state, "last_signal", None))
+        last_risk = _as_dict(getattr(agent_state, "last_risk", None))
         phase = getattr(agent_state, "agent_phase", "STOPPED")
         context["signal"] = {
             "action": last_signal.get("action", "wait"),
@@ -229,16 +227,16 @@ class TweetPipelineService:
 
         if x_sentiment_service and x_sentiment_service.is_configured():
             try:
-                x_data = x_sentiment_service.fetch_all()
-                sentiment = x_data.get("sentiment", {})
-                trending = x_data.get("trending", [])[:5]
+                x_data = _as_dict(x_sentiment_service.fetch_all())
+                sentiment = _as_dict(x_data.get("sentiment"))
+                trending = x_data.get("trending", []) if isinstance(x_data.get("trending"), list) else []
                 context["sentiment"] = {
                     "score": sentiment.get("score", 50),
                     "label": sentiment.get("label", "neutral"),
                     "summary": sentiment.get("summary", ""),
                     "trending": [
-                        {"coin": t.get("coin", ""), "sentiment_pct": t.get("sentiment_pct", 50)}
-                        for t in trending
+                        {"coin": _as_dict(t).get("coin", ""), "sentiment_pct": _as_dict(t).get("sentiment_pct", 50)}
+                        for t in trending[:5]
                     ],
                     "narrative": x_data.get("narrative", ""),
                 }

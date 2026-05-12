@@ -7,6 +7,7 @@ import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from strategy.models import Order, RiskDecision, Signal, StrategyConfig, utc_now
 
@@ -182,6 +183,12 @@ class AgentState:
             self.add_event("order", order.status, data)
             self._save_core_state()
 
+    def replace_orders(self, orders: list[dict[str, Any]]):
+        with self._lock:
+            self.orders = [order for order in orders if isinstance(order, dict)][:100]
+            self._persist_orders()
+            self._save_core_state()
+
     def _mark_to_market(self, symbol: str, price: float):
         for order in self.orders:
             if order.get("symbol") != symbol or order.get("mode") != "paper" or order.get("status") != "OPEN":
@@ -230,8 +237,17 @@ class AgentState:
             self.add_event("risk", "consecutive loss pause", {"pause_until": self._loss_pause_until})
             self._save_core_state()
 
-    def add_event(self, kind: str, message: str, data: dict[str, Any] | None = None):
-        event = {"timestamp": utc_now(), "kind": kind, "message": message, "data": data or {}}
+    def add_event(self, kind: str, message: str, data: dict[str, Any] | None = None, *, level: str = "info", module: str = "agent", action: str | None = None, request_id: str | None = None):
+        event = {
+            "timestamp": utc_now(),
+            "level": level,
+            "module": module,
+            "action": action or message,
+            "request_id": request_id or str(uuid4()),
+            "kind": kind,
+            "message": message,
+            "data": data or {},
+        }
         self.events.insert(0, event)
         self.events = self.events[:200]
         self._append_jsonl(EVENTS_PATH, event)
@@ -305,6 +321,7 @@ class AgentState:
             "latest_age_seconds": None if not latest else round(self.heatmap_snapshot_age_seconds(latest), 1),
             "liq_map_calls_today": self.api_calls_for_day(today, "liq_map"),
             "liq_map_cost_today": self.api_cost_for_day(today, "liq_map"),
+            "snapshots": self.heatmap_snapshots[:20],
         }
 
     def seconds_since_last_trade(self, symbol: str) -> float:
@@ -351,6 +368,7 @@ class AgentState:
                 "config": self.config.to_dict(),
                 "last_signal": self.last_signal,
                 "last_risk": self.last_risk,
+                "last_snapshot": self.last_snapshot,
                 "last_llm_review": self.last_llm_review,
                 "last_order": self.orders[0] if self.orders else None,
                 "heatmap": self.heatmap_status(),

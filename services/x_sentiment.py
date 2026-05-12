@@ -21,13 +21,15 @@ from typing import Any
 
 try:
     import httpx
+
+    from services.llm import _as_dict, _openai_response_text
 except ImportError:
     httpx = None
 
 
 XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_MODEL = "grok-4.3"
-MAX_SEARCH_RESULTS = 25  # hard cap to control cost
+MAX_SEARCH_RESULTS = 80  # broader scan; cost is shown in UI
 
 SYSTEM_PROMPT = """You are a crypto X (Twitter) sentiment analyst. Given the user's request, search X for recent crypto discussions and return STRUCTURED JSON ONLY (no prose, no markdown fences) matching this schema:
 
@@ -42,15 +44,29 @@ SYSTEM_PROMPT = """You are a crypto X (Twitter) sentiment analyst. Given the use
     {"coin": "BTC", "mentions": <int>, "sentiment_pct": <0-100>, "label": "bullish|bearish|neutral", "headline": "<1 sentence Chinese summary of discussion>"}
   ],
   "top_tweets": [
-    {"author": "<display name>", "handle": "<username without @>", "text": "<tweet text>", "sentiment_label": "positive|negative|neutral", "url": "<full https://x.com/... URL if known else empty>", "engagement_estimate": "<low|medium|high|viral>"}
+    {"author": "<display name>", "handle": "<username without @>", "text": "<tweet text>", "sentiment_label": "positive|negative|neutral", "url": "<full https://x.com/... URL if known else empty>", "engagement_estimate": "<low|medium|high|viral>", "why_it_matters": "<Chinese reason>"}
   ],
-  "narrative": "<3-4 sentence Chinese analysis of current crypto X narrative, risks, opportunities>"
+  "kol_views": [
+    {"handle": "<username>", "stance": "bullish|bearish|neutral", "topic": "<topic>", "evidence_url": "<x.com URL>"}
+  ],
+  "dimensions": {
+    "market_structure": "<Chinese analysis>",
+    "liquidity_and_leverage": "<Chinese analysis>",
+    "macro_and_policy": "<Chinese analysis>",
+    "onchain_or_etf": "<Chinese analysis>",
+    "risk_events": "<Chinese analysis>"
+  },
+  "actionable_signals": [
+    {"signal": "<signal>", "direction": "long|short|risk_off|watch", "confidence": <0-1>, "evidence": "<Chinese evidence>"}
+  ],
+  "narrative": "<6-10 sentence Chinese professional analysis of current crypto X narrative, risks, opportunities>"
 }
 
 Rules:
 - Return ONLY the JSON object, no additional text
 - trending: top 10 coins by mention volume, sorted descending
-- top_tweets: 8-10 most impactful tweets
+- top_tweets: 15-20 most impactful tweets, each with URL when available
+- Cover major crypto KOLs, news accounts, ETF/macro accounts, exchange/funding/liquidation narratives, and both bullish and bearish views
 - Use Chinese for all summary/narrative/headline fields
 - If no data found, return the schema with empty arrays and score=50
 """
@@ -118,7 +134,10 @@ class XSentimentService:
             if start >= 0 and end > start:
                 text = text[start:end + 1]
         try:
-            return json.loads(text)
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
+            return {"sentiment": {"score": 50, "label": "neutral", "summary": "JSON parse error"}, "trending": [], "top_tweets": [], "narrative": ""}
         except (json.JSONDecodeError, ValueError):
             return {"sentiment": {"score": 50, "label": "neutral", "summary": "JSON parse error"}, "trending": [], "top_tweets": [], "narrative": ""}
 
@@ -166,7 +185,8 @@ class XSentimentService:
 
         self._api_calls_total += 1
         # rough cost estimate: $25/1K sources + tokens (Grok 4 Fast)
-        usage = data.get("usage", {})
+        data_dict = _as_dict(data)
+        usage = _as_dict(data_dict.get("usage"))
         in_tok = usage.get("prompt_tokens", 0)
         out_tok = usage.get("completion_tokens", 0)
         sources_used = usage.get("num_sources_used", max_results)
@@ -176,9 +196,13 @@ class XSentimentService:
             + (sources_used / 1000) * 25.0
         )
 
-        choice = (data.get("choices") or [{}])[0]
-        content = (choice.get("message") or {}).get("content", "")
-        citations = data.get("citations", []) or choice.get("message", {}).get("citations", []) or []
+        choices = data_dict.get("choices") if isinstance(data_dict.get("choices"), list) else []
+        choice = _as_dict(choices[0]) if choices else {}
+        message = _as_dict(choice.get("message"))
+        content = _openai_response_text(data)
+        citations = data_dict.get("citations", []) or message.get("citations", []) or []
+        if not isinstance(citations, list):
+            citations = []
         parsed = self._extract_json(content)
         return parsed, citations
 
@@ -194,10 +218,11 @@ class XSentimentService:
                 return cached
 
         prompt = (
-            "搜索最近 1-2 小时 X 上关于加密货币的讨论（关键词: crypto, bitcoin, ethereum, "
-            "$BTC, $ETH, $SOL, $BNB, $XRP, $DOGE, $ADA, $AVAX 以及其他热门币种）。"
-            "分析整体情绪、识别讨论热度最高的币种、挑选影响力最大的推文。"
-            "按规定的 JSON 格式返回结果。"
+            "扫描最近 1-4 小时 X 上关于加密货币的高影响力讨论，覆盖 crypto, bitcoin, ethereum, "
+            "$BTC, $ETH, $SOL, $BNB, $XRP, $DOGE, $ADA, $AVAX, ETF, FOMC, funding, liquidation, "
+            "open interest, leverage, whale, stablecoin flow, Binance, Coinbase 等关键词。"
+            "优先覆盖主流 KOL、新闻源、交易员、链上/ETF/宏观账号，保留能直达 X 的 URL。"
+            "按规定 JSON 返回，输出必须专业、分维度、可操作，不要泛泛总结。"
         )
         try:
             parsed, citations = self._call_grok(prompt, max_results=MAX_SEARCH_RESULTS)
@@ -209,20 +234,31 @@ class XSentimentService:
         self._last_fetch_ts = time.time()
 
         # Normalize with defaults
-        sentiment = parsed.get("sentiment") or {}
+        parsed = _as_dict(parsed)
+        sentiment = _as_dict(parsed.get("sentiment"))
         sentiment.setdefault("score", 50)
         sentiment.setdefault("label", "neutral")
         sentiment.setdefault("summary", "")
         sentiment.setdefault("total_analyzed", 0)
 
         trending = parsed.get("trending") or []
+        if not isinstance(trending, list):
+            trending = []
         top_tweets = parsed.get("top_tweets") or []
+        if not isinstance(top_tweets, list):
+            top_tweets = []
+        dimensions = parsed.get("dimensions") if isinstance(parsed.get("dimensions"), dict) else {}
+        kol_views = parsed.get("kol_views") if isinstance(parsed.get("kol_views"), list) else []
+        actionable_signals = parsed.get("actionable_signals") if isinstance(parsed.get("actionable_signals"), list) else []
         narrative = parsed.get("narrative") or ""
 
         result = {
             "sentiment": sentiment,
             "trending": trending,
             "top_tweets": top_tweets,
+            "kol_views": kol_views,
+            "dimensions": dimensions,
+            "actionable_signals": actionable_signals,
             "narrative": narrative,
             "citations": citations,
             "meta": {

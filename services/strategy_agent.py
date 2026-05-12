@@ -89,6 +89,8 @@ def _parse_json(text: str) -> dict[str, Any]:
 
 
 def _sanitize_review(data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("LLM review JSON must be an object")
     decision = str(data.get("decision") or "wait").lower()
     if decision not in {"approve", "reject", "reduce_size", "tighten_stop", "wait"}:
         decision = "wait"

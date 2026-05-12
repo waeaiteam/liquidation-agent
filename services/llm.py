@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -55,7 +56,7 @@ def _call_anthropic(api_key: str, model: str, payload: dict, user_prompt: str) -
     kwargs = {
         "model": model,
         "max_tokens": 1600,
-        "system": [{"type": "text", "text": ANALYSIS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+        "system": [{"type": "text", "text": _system_prompt(payload), "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": _analysis_user_message(payload, user_prompt)}],
     }
     if model.startswith(("claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6")):
@@ -73,7 +74,7 @@ def _call_openai_compatible(base_url: str, api_key: str, model: str, payload: di
     body = {
         "model": model,
         "messages": [
-            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+            {"role": "system", "content": _system_prompt(payload)},
             {"role": "user", "content": _analysis_user_message(payload, user_prompt)},
         ],
     }
@@ -84,16 +85,66 @@ def _call_openai_compatible(base_url: str, api_key: str, model: str, payload: di
         method="POST",
     )
     data = _request_json(req)
+    return _openai_response_text(data)
+
+
+def _openai_response_text(data: Any) -> str:
+    if isinstance(data, str):
+        return data.strip()
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected LLM provider JSON: {type(data).__name__}")
     choices = data.get("choices") or []
     if not choices:
         return json.dumps(data, ensure_ascii=False)
-    return (choices[0].get("message") or {}).get("content", "").strip()
+    return _choice_content(choices[0])
 
 
-def _request_json(req: Request) -> dict:
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _system_prompt(payload: Any) -> str:
+    if isinstance(payload, dict):
+        override = payload.get("system_override")
+        if isinstance(override, str) and override.strip():
+            return override
+    return ANALYSIS_SYSTEM_PROMPT
+
+
+def _choice_content(choice: Any) -> str:
+    if isinstance(choice, str):
+        return choice.strip()
+    if not isinstance(choice, dict):
+        raise RuntimeError(f"Unexpected LLM provider choice JSON: {type(choice).__name__}")
+    message = choice.get("message") or choice.get("delta") or {}
+    if isinstance(message, str):
+        return message.strip()
+    if not isinstance(message, dict):
+        raise RuntimeError(f"Unexpected LLM provider message JSON: {type(message).__name__}")
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "".join(parts).strip()
+    text = choice.get("text")
+    if isinstance(text, str):
+        return text.strip()
+    return json.dumps(choice, ensure_ascii=False)
+
+
+def _request_json(req: Request) -> dict | str:
     try:
         with urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, (dict, str)):
+                return data
+            raise RuntimeError(f"Unexpected LLM provider JSON: {type(data).__name__}")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:1000]
         raise RuntimeError(f"LLM provider returned HTTP {exc.code}: {detail}") from exc

@@ -68,11 +68,24 @@ class HeatmapClusterAnalyzer:
         return data if isinstance(data, dict) else {}
 
     def _prices(self, data: dict[str, Any]) -> list[float]:
+        if isinstance(data.get("price_axis"), list):
+            return [value for value in (self._number(item) for item in data.get("price_axis") or []) if value is not None]
         raw = data.get("prices") or data.get("price") or data.get("priceList") or []
         return [value for value in (self._number(item) for item in raw) if value is not None]
 
     def _buckets(self, data: dict[str, Any], prices: list[float], bucket_size: float) -> dict[float, float]:
         buckets: dict[float, float] = {}
+        if isinstance(data.get("points"), list):
+            for point in data["points"]:
+                if not isinstance(point, dict):
+                    continue
+                price = self._number(point.get("price"))
+                volume = self._number(point.get("value"))
+                if price is None or volume is None or volume <= 0:
+                    continue
+                low = math.floor(price / bucket_size) * bucket_size
+                buckets[low] = buckets.get(low, 0.0) + volume
+            return buckets
         for key, values in data.items():
             if key.lower() in META_KEYS or not isinstance(values, list) or len(values) != len(prices):
                 continue

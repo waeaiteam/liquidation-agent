@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from services.llm import _as_dict, _openai_response_text
+
 
 XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_MODEL = "grok-4.3"
@@ -195,12 +197,12 @@ class XAIChatService:
 
         self._api_calls += 1
 
-        choice = (data.get("choices") or [{}])[0]
-        reply_text = (choice.get("message") or {}).get("content", "")
-        citations = data.get("citations", []) or []
+        data_dict = _as_dict(data)
+        reply_text = _openai_response_text(data)
+        citations = data_dict.get("citations", []) if isinstance(data_dict.get("citations"), list) else []
 
         # Token/cost tracking
-        usage = data.get("usage", {})
+        usage = _as_dict(data_dict.get("usage"))
         in_tok = usage.get("prompt_tokens", 0)
         out_tok = usage.get("completion_tokens", 0)
         sources_used = len(citations) if use_live else 0

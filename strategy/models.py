@@ -46,6 +46,9 @@ class StrategyConfig:
     event_triggered_liq_map: bool = True
     notional_usd: float = 100
     max_notional_usd: float = 1_000
+    paper_seed_usd: float = 100_000
+    paper_fee_rate: float = 0.0004
+    paper_slippage_bps: float = 1.0
     leverage: int = 2
     max_leverage: int = 5
     stop_loss_pct: float = 0.6
@@ -61,9 +64,15 @@ class StrategyConfig:
     max_holding_minutes: int = 30
     max_consecutive_losses: int = 2
     loss_pause_minutes: int = 180
+    llm_provider: str = "anthropic"
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_context_length: int = 0
     llm_review_enabled: bool = False
     llm_review_provider: str = "anthropic"
     llm_review_model: str = ""
+    llm_review_base_url: str = ""
+    llm_review_context_length: int = 0
     llm_review_min_confidence: float = 0.65
     allowed_symbols: list[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
     live_enabled: bool = False
@@ -89,12 +98,15 @@ class StrategyConfig:
         values["loss_pause_minutes"] = max(1, int(values["loss_pause_minutes"]))
         values["allowed_symbols"] = [str(s).upper() for s in values["allowed_symbols"]]
         values["allowed_heatmap_leverage_tiers"] = [str(s).lower() for s in values["allowed_heatmap_leverage_tiers"]]
+        values["llm_context_length"] = max(0, int(values["llm_context_length"] or 0))
+        values["llm_review_context_length"] = max(0, int(values["llm_review_context_length"] or 0))
         values["coin"] = str(values["coin"]).upper()
         values["symbol"] = str(values["symbol"]).upper()
         values["exchange"] = str(values["exchange"]).lower()
         values["mode"] = str(values["mode"]).lower()
         values["entry_mode"] = str(values["entry_mode"]).lower()
         values["stop_mode"] = str(values["stop_mode"]).lower()
+        values["llm_provider"] = str(values["llm_provider"]).lower()
         values["llm_review_provider"] = str(values["llm_review_provider"]).lower()
         return cls(**values)
 
@@ -115,6 +127,7 @@ class MarketSnapshot:
     long_short: list[dict[str, Any]] = field(default_factory=list)
     funding: list[dict[str, Any]] = field(default_factory=list)
     liq_map: dict[str, Any] = field(default_factory=dict)
+    market: dict[str, Any] = field(default_factory=dict)
     data_warnings: list[str] = field(default_factory=list)
     wallet: str = ""
     timestamp: str = field(default_factory=utc_now)
