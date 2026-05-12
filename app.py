@@ -23,7 +23,7 @@ from services.evolution import EvolutionEngine
 from services.heatmap_manager import HeatmapSnapshotManager
 from services.liquidation_maps import normalize_liquidation_map
 from services.llm import _as_dict, analyze_with_llm
-from services.market_data import MarketDataError, market_data_service
+from services.market_data import MarketDataError, MarketDataRestrictedError, market_data_service
 from services.strategy_agent import apply_llm_review, review_trade_with_llm
 from services.x_sentiment import get_service as get_x_service
 from services.xai_chat import get_chat_service as get_xai_chat
@@ -113,14 +113,15 @@ def _normalize_market_payload(payload: dict[str, Any]) -> tuple[str, str, str, s
 def _snapshot_from_market(config: StrategyConfig, market: dict[str, Any]) -> MarketSnapshot:
     symbol = str(market.get("symbol") or config.symbol).upper()
     coin = symbol[:-4] if symbol.endswith("USDT") else config.coin
+    exchange = str(market.get("exchange") or config.exchange).lower()
     return MarketSnapshot(
         coin=coin,
         symbol=symbol,
-        exchange=str(market.get("exchange") or config.exchange).lower(),
+        exchange=exchange,
         interval=config.interval,
         price=float(market.get("price") or 0),
-        oi=[{"symbol": symbol, "exchange": config.exchange, "openInterest": market.get("open_interest", 0)}],
-        funding=[{"symbol": symbol, "exchange": config.exchange, "rate": market.get("funding_rate", 0)}],
+        oi=[{"symbol": symbol, "exchange": exchange, "openInterest": market.get("open_interest", 0)}],
+        funding=[{"symbol": symbol, "exchange": exchange, "rate": market.get("funding_rate", 0)}],
         market=market,
         data_warnings=[],
     )
@@ -326,8 +327,12 @@ def market_refresh():
     payload = request.get_json() or {}
     try:
         config = agent_state.config
-        if payload.get("config"):
-            config = agent_state.update_config(payload.get("config") or {})
+        config_patch = dict(payload.get("config") or {})
+        for key in ("coin", "symbol", "exchange", "interval"):
+            if payload.get(key):
+                config_patch[key] = payload.get(key)
+        if config_patch:
+            config = agent_state.update_config(config_patch)
         symbol = str(payload.get("symbol") or config.symbol).upper().replace("/", "")
         exchange = str(payload.get("exchange") or config.exchange).lower()
         interval = str(payload.get("interval") or config.interval)
@@ -346,6 +351,9 @@ def market_refresh():
             "klines": len(market.get("klines") or []),
         }, module="market_data", action="refresh")
         return jsonify({"market": market, "snapshot": snapshot.to_dict(), "status": agent_state.status()})
+    except MarketDataRestrictedError as exc:
+        agent_state.add_event("error", str(exc), {"symbol": payload.get("symbol"), "exchange": payload.get("exchange"), "reason": "restricted_location"}, level="error", module="market_data", action="refresh")
+        return jsonify({"error": str(exc), "code": "restricted_location"}), 451
     except MarketDataError as exc:
         agent_state.add_event("error", str(exc), {"symbol": payload.get("symbol"), "exchange": payload.get("exchange")}, level="error", module="market_data", action="refresh")
         return jsonify({"error": str(exc)}), 502
@@ -963,8 +971,12 @@ def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: b
         return {"error": "agent tick already running", "phase": agent_state.agent_phase}, 409
     try:
         config = agent_state.config
-        if payload.get("config"):
-            config = agent_state.update_config(payload.get("config") or {})
+        config_patch = dict(payload.get("config") or {})
+        for key in ("coin", "symbol", "exchange", "interval"):
+            if payload.get(key):
+                config_patch[key] = payload.get(key)
+        if config_patch:
+            config = agent_state.update_config(config_patch)
         pk = _get_private_key(payload, allow_worker_key=allow_worker_key)
         if not pk:
             return {"error": "Enter wallet key"}, 400
@@ -1063,6 +1075,14 @@ def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: b
     except Claw402Error as exc:
         agent_state.add_event("error", f"Payment failed: {exc}")
         return {"error": f"Payment failed: {exc}"}, 402
+    except MarketDataRestrictedError as exc:
+        agent_state.set_phase("ERROR", {"code": "restricted_location"})
+        agent_state.add_event("error", str(exc), {"symbol": agent_state.config.symbol, "exchange": agent_state.config.exchange, "reason": "restricted_location"}, level="error", module="market_data", action="tick")
+        return {"error": str(exc), "code": "restricted_location"}, 451
+    except MarketDataError as exc:
+        agent_state.set_phase("ERROR", {"code": "market_data_error"})
+        agent_state.add_event("error", str(exc), {"symbol": agent_state.config.symbol, "exchange": agent_state.config.exchange}, level="error", module="market_data", action="tick")
+        return {"error": str(exc), "code": "market_data_error"}, 502
     except Exception as exc:
         agent_state.add_event("error", str(exc))
         return {"error": str(exc)}, 500

@@ -223,6 +223,20 @@ function renderHeader(s) {
   if (stopBtn) stopBtn.style.display = running ? '' : 'none';
 }
 
+function selectedHeaderSymbol() {
+  return (($('hdrSymbol')?.value || state.lastStatus?.config?.symbol || 'BTCUSDT').replace('/', '')).toUpperCase();
+}
+
+function selectedHeaderExchange() {
+  const raw = $('hdrExchange')?.value || state.lastStatus?.config?.exchange || 'binance';
+  return String(raw).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+}
+
+function selectedHeaderInterval() {
+  const raw = $('hdrInterval')?.value || state.lastStatus?.config?.interval || '1m';
+  return String(raw).trim().replace(/H$/, 'h').replace(/D$/, 'd').replace(/W$/, 'w');
+}
+
 // ============== STATUS POLLING ==============
 async function pollStatus() {
   try {
@@ -243,9 +257,9 @@ async function refreshAgentData({ forceHeatmap = false } = {}) {
   try {
     if (!forceHeatmap) {
       const result = await api('POST', '/api/market/refresh', {
-        symbol: (state.lastStatus?.config?.symbol || $('hdrSymbol')?.value || 'BTCUSDT').replace('/', ''),
-        exchange: (state.lastStatus?.config?.exchange || 'binance').toLowerCase(),
-        interval: state.lastStatus?.config?.interval || '1m',
+        symbol: selectedHeaderSymbol(),
+        exchange: selectedHeaderExchange(),
+        interval: selectedHeaderInterval(),
       });
       state.lastStatus = result.status || await api('GET', '/api/agent/status');
       renderHeader(state.lastStatus);
@@ -261,6 +275,10 @@ async function refreshAgentData({ forceHeatmap = false } = {}) {
       pk,
       manual: true,
       force_heatmap: !!forceHeatmap,
+      coin: selectedHeaderSymbol().replace(/USDT$/, ''),
+      symbol: selectedHeaderSymbol(),
+      exchange: selectedHeaderExchange(),
+      interval: selectedHeaderInterval(),
       llm_review_provider: $('llmReviewProvider')?.value || undefined,
       llm_review_api_key: ($('llmReviewKey')?.value || '').trim(),
       llm_review_model: $('llmReviewModelSelect')?.value || undefined,
