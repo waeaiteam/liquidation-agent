@@ -1,0 +1,1949 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Liquidation Agent</title>
+<style>
+:root{
+  --bg:#f7f8fa;--surface:#fff;--surface-2:#fafbfc;--border:#ebedf0;--border-2:#d9dce1;
+  --text:#1a1a2e;--text-2:#5c5f6a;--text-3:#9ea2ab;
+  --purple:#6c5ce7;--purple-soft:#f0edff;--purple-dark:#5a4bd1;--purple-mid:#a29bfe;
+  --green:#00b894;--green-soft:#e6f9f4;--green-text:#00a884;
+  --red:#e74c3c;--red-soft:#fdeaea;--red-text:#d63031;
+  --amber:#f39c12;--amber-soft:#fef5e7;--amber-text:#e67e22;
+  --blue:#0984e3;--blue-soft:#e8f4fd;
+  --orange:#e17055;--orange-soft:#fdf0ed;
+  --shadow:0 2px 8px rgba(0,0,0,.04);
+  --radius:12px;
+  --font:-apple-system,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+  --mono:"SF Mono","JetBrains Mono","Cascadia Code",Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;font:14px/1.5 var(--font);color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:3px}
+
+/* ===== APP SHELL ===== */
+.app{display:grid;grid-template-columns:200px 1fr;grid-template-rows:56px 1fr;height:100vh}
+
+/* ===== HEADER ===== */
+.header{grid-column:1/-1;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:12px}
+.logo{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:var(--text);width:180px;flex-shrink:0}
+.logo-icon{width:28px;height:28px;background:linear-gradient(135deg,#6c5ce7,#a29bfe);border-radius:7px;display:grid;place-items:center}
+.logo-icon svg{width:14px;height:14px;fill:none;stroke:#fff;stroke-width:2.5}
+.hdr-pill{height:28px;padding:0 10px;border-radius:14px;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:5px}
+.hdr-pill .dot{width:6px;height:6px;border-radius:50%}
+.pill-green{background:var(--green-soft);color:var(--green-text)}.pill-green .dot{background:var(--green)}
+.pill-purple{background:var(--purple-soft);color:var(--purple-dark)}.pill-purple .dot{background:var(--purple);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.hdr-select{height:32px;padding:0 28px 0 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239ea2ab' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 8px center;font-size:13px;font-family:var(--mono);appearance:none;cursor:pointer;color:var(--text)}
+.hdr-select:hover{border-color:var(--border-2)}
+.spacer{flex:1}
+.api-badge{height:32px;padding:0 12px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:var(--mono);color:var(--text-2);display:flex;align-items:center}
+.avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#6c5ce7,#e17055);display:grid;place-items:center;color:#fff;font-weight:700;font-size:11px;cursor:pointer}
+
+/* ===== SIDEBAR ===== */
+.sidebar{background:var(--surface);border-right:1px solid var(--border);padding:12px 8px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:var(--text-2);font-size:13.5px;cursor:pointer;transition:all .15s;font-weight:500}
+.nav-item:hover{background:var(--surface-2);color:var(--text)}
+.nav-item.active{background:var(--purple-soft);color:var(--purple-dark)}
+.stab-item:hover{background:var(--surface-2);color:var(--text)}
+.nav-item svg{width:18px;height:18px;stroke-width:1.75;flex-shrink:0}
+
+/* ===== MAIN ===== */
+.main{padding:20px 24px;overflow-y:auto}
+.page{display:none}.page.active{display:block}
+
+/* ===== KPI ROW ===== */
+.kpi-row{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px}
+.kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);display:flex;align-items:flex-start;gap:12px}
+.kpi-icon{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;flex-shrink:0}
+.kpi-icon svg{width:20px;height:20px}
+.kpi-body{flex:1;min-width:0}
+.kpi-label{font-size:12px;color:var(--text-3);margin-bottom:4px}
+.kpi-value{font-size:20px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em;line-height:1.2;white-space:nowrap}
+.kpi-value .unit{font-size:11px;font-weight:500;color:var(--text-3);margin-left:2px}
+.kpi-sub{font-size:11.5px;color:var(--text-3);margin-top:3px;font-family:var(--mono)}
+.kpi-sub.pos{color:var(--green-text)}.kpi-sub.neg{color:var(--red-text)}
+
+/* ===== DASHBOARD MID ===== */
+.dash-mid{display:grid;grid-template-columns:1.8fr 1fr 1fr;gap:12px;margin-bottom:16px}
+.dash-bot{display:grid;grid-template-columns:1.1fr 1.2fr 0.9fr;gap:12px}
+
+/* ===== CARD ===== */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow)}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.card-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:6px}
+.card-title .info{width:14px;height:14px;border-radius:50%;border:1px solid var(--text-3);color:var(--text-3);display:inline-grid;place-items:center;font-size:9px;cursor:help}
+.card-action{font-size:12px;color:var(--text-3);background:none;border:none;cursor:pointer}
+.card-action:hover{color:var(--purple)}
+
+/* ===== HEATMAP WIDGET ===== */
+.hm-tabs{display:inline-flex;background:var(--surface-2);border-radius:6px;padding:2px;gap:1px}
+.hm-tabs button{padding:4px 12px;border:none;background:transparent;border-radius:5px;font-size:12px;font-family:var(--mono);color:var(--text-3);cursor:pointer;font-weight:500}
+.hm-tabs button.active{background:var(--purple);color:#fff}
+.hm-legend{display:flex;align-items:center;gap:12px;font-size:11px;color:var(--text-3);margin:8px 0}
+.hm-legend .grad{width:80px;height:8px;border-radius:4px;background:linear-gradient(90deg,#1a1a4e,#3d3d9e,#6c5ce7,#f39c12,#e74c3c)}
+.hm-legend .line-swatch{width:14px;height:2px;background:#fff;border:1px solid var(--text-3);border-radius:1px}
+.hm-canvas{height:260px;border-radius:8px;overflow:hidden;background:#1a1a2e}
+
+/* ===== SIGNAL GRID ===== */
+.sig-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.sig-card{padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2)}
+.sig-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.sig-name{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text-2);font-weight:500}
+.sig-icon{width:26px;height:26px;border-radius:7px;display:grid;place-items:center}
+.sig-icon svg{width:14px;height:14px}
+.sig-tag{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.sig-tag.strong{background:var(--green-soft);color:var(--green-text)}
+.sig-tag.watch{background:#f3f4f6;color:var(--text-3)}
+.sig-tag.attn{background:var(--amber-soft);color:var(--amber-text)}
+.sig-tag.low{background:#f3f4f6;color:var(--text-3)}
+.sig-pct{font-size:28px;font-weight:700;font-family:var(--mono);letter-spacing:-.03em;margin-bottom:6px}
+.sig-info{font-size:11px;color:var(--text-3);line-height:1.6}
+
+/* ===== AI DONUT ===== */
+.ai-donut-wrap{display:flex;justify-content:center;margin:10px 0 16px}
+.ai-donut{position:relative;width:130px;height:130px}
+.ai-donut svg{transform:rotate(-90deg)}
+.ai-donut .bg{stroke:#f0f0f4}.ai-donut .fg{stroke:var(--purple);transition:stroke-dashoffset .5s}
+.ai-donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ai-donut-center .lbl{font-size:11px;color:var(--text-3)}
+.ai-donut-center .val{font-size:24px;font-weight:700;font-family:var(--mono);color:var(--purple-dark)}
+.ai-donut-center .delta{font-size:11px;color:var(--green-text);font-family:var(--mono)}
+.ai-train{margin-top:12px}
+.ai-train-row{display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--text-2);margin-bottom:6px}
+.ai-train-row .pct{font-family:var(--mono);font-weight:600;color:var(--text)}
+.ai-bar{height:5px;background:#f0f0f4;border-radius:3px;overflow:hidden}
+.ai-bar-fg{height:100%;background:linear-gradient(90deg,var(--purple),var(--purple-mid));border-radius:3px}
+.ai-eta{font-size:11px;color:var(--text-3);margin-top:6px}
+.ai-meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.ai-meta-cell{padding:10px;background:var(--surface-2);border-radius:8px;border:1px solid var(--border)}
+.ai-meta-cell .ml{font-size:10.5px;color:var(--text-3);margin-bottom:3px}
+.ai-meta-cell .mv{font-size:15px;font-weight:700;font-family:var(--mono)}
+.ai-meta-cell .md{font-size:10.5px;color:var(--green-text);font-family:var(--mono);margin-top:2px}
+.ai-meta-cell .mu{font-size:10.5px;color:var(--text-3);margin-top:2px}
+.ai-link{display:block;text-align:center;margin-top:12px;padding:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--purple-dark);cursor:pointer;font-weight:500}
+.ai-link:hover{background:var(--purple-soft)}
+
+/* ===== TABLE ===== */
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl th{text-align:left;font-size:11px;color:var(--text-3);padding:8px 10px;border-bottom:1px solid var(--border);font-weight:500}
+.tbl td{padding:9px 10px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:var(--surface-2)}
+.tag{display:inline-flex;padding:2px 8px;border-radius:4px;font-size:10.5px;font-weight:600}
+.tag-up{background:var(--green-soft);color:var(--green-text)}
+.tag-dn{background:var(--red-soft);color:var(--red-text)}
+.tag-done{background:#f0f0f4;color:var(--text-2)}
+.pos{color:var(--green-text)}.neg{color:var(--red-text)}
+
+/* ===== PERF CARD ===== */
+.perf-tabs{display:inline-flex;background:var(--surface-2);border-radius:6px;padding:2px;gap:1px}
+.perf-tabs button{padding:4px 12px;border:none;background:transparent;border-radius:5px;font-size:11.5px;color:var(--text-3);cursor:pointer;font-weight:500}
+.perf-tabs button.active{background:var(--purple);color:#fff}
+.perf-chart{height:180px;margin:10px 0}
+.perf-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;padding-top:12px;border-top:1px solid var(--border)}
+.perf-stat .pl{font-size:10.5px;color:var(--text-3);margin-bottom:2px}
+.perf-stat .pv{font-size:14px;font-weight:700;font-family:var(--mono)}
+
+/* ===== RISK GAUGE ===== */
+.risk-gauge{height:110px}
+.risk-stats{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.risk-row{display:flex;align-items:center;justify-content:space-between;font-size:12px}
+.risk-row .rl{display:flex;align-items:center;gap:6px;color:var(--text-2)}
+.risk-row .rl .dot{width:6px;height:6px;border-radius:50%}
+.risk-row .rv{font-family:var(--mono);font-weight:600}
+.notif-section{margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
+.notif-title{font-size:12px;color:var(--text-2);font-weight:500;margin-bottom:8px;display:flex;align-items:center;gap:5px}
+.notif-title svg{width:13px;height:13px}
+.notif-item{display:flex;gap:8px;padding:7px;background:var(--surface-2);border-radius:7px;margin-bottom:6px;font-size:11.5px}
+.notif-item:last-child{margin-bottom:0}
+.notif-dot{width:6px;height:6px;border-radius:50%;margin-top:5px;flex-shrink:0}
+.notif-text{flex:1;color:var(--text);line-height:1.5}
+.notif-time{font-size:10px;color:var(--text-3);font-family:var(--mono)}
+
+/* ===== FOOTER LINK ===== */
+.view-all{font-size:12px;color:var(--purple-dark);cursor:pointer;margin-top:8px;display:inline-flex;align-items:center;gap:3px}
+.view-all:hover{text-decoration:underline}
+
+/* ===== CHART PLACEHOLDER ===== */
+.chart{width:100%;height:260px}
+
+/* ===== TOASTS ===== */
+.toasts{position:fixed;top:70px;right:16px;z-index:1000;display:flex;flex-direction:column;gap:8px}
+.toast{padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:12.5px;box-shadow:0 4px 12px rgba(0,0,0,.08);animation:slidein .2s}
+.toast.ok{border-left:3px solid var(--green)}.toast.err{border-left:3px solid var(--red)}.toast.info{border-left:3px solid var(--purple)}
+@keyframes slidein{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
+
+/* ===== EMPTY STATE OVERLAY ===== */
+.empty-state-overlay{position:absolute;inset:0;background:rgba(247,248,250,.92);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:50;border-radius:var(--radius)}
+.page{position:relative}
+.empty-state-box{text-align:center;max-width:360px;padding:40px}
+.empty-state-icon{width:64px;height:64px;margin:0 auto 16px;background:var(--purple-soft);border-radius:16px;display:grid;place-items:center}
+.empty-state-icon svg{width:32px;height:32px;stroke:var(--purple)}
+.empty-state-title{font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px}
+.empty-state-desc{font-size:13px;color:var(--text-2);line-height:1.6;margin-bottom:20px}
+.empty-state-btn{padding:10px 24px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s}
+.empty-state-btn:hover{background:var(--purple-dark)}
+
+/* ===== GROK QUICK PROMPTS ===== */
+.grok-quick{padding:5px 10px;border:1px solid var(--border);border-radius:14px;background:var(--surface-2);font-size:11px;cursor:pointer;color:var(--text-2);transition:all .15s}
+.grok-quick:hover{border-color:var(--purple);color:var(--purple-dark);background:var(--purple-soft)}
+.grok-report-section{margin-bottom:12px}
+.grok-report-label{font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;font-weight:600}
+.grok-report-value{font-size:12px;color:var(--text);line-height:1.6}
+.grok-draft-card{padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)}
+.grok-draft-text{font-size:12px;line-height:1.6;margin-bottom:6px;white-space:pre-wrap}
+.grok-draft-meta{display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--text-3);margin-bottom:6px}
+.grok-draft-actions{display:flex;gap:6px}
+.grok-draft-btn{flex:1;padding:5px 8px;border-radius:5px;border:1px solid var(--border);background:var(--surface);font-size:11px;cursor:pointer}
+.grok-draft-btn.primary{background:var(--purple);color:#fff;border:none}
+.grok-draft-btn:hover{opacity:.9}
+</style>
+</head>
+<body>
+<div class="app">
+<!-- HEADER -->
+<header class="header">
+  <div class="logo">
+    <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M4 4v16M4 12h6M14 8l-4 4 4 4M20 4v16"/></svg></div>
+    <span>Liquidation Agent</span>
+  </div>
+  <span class="hdr-pill pill-green"><span class="dot"></span>已连接</span>
+  <span class="hdr-pill pill-purple" id="hdrRun"><span class="dot"></span><span id="hdrRunText">已停止</span></span>
+  <button id="btnStart" style="height:32px;padding:0 12px;border:none;border-radius:8px;background:var(--green);color:#fff;font-size:11px;font-weight:600;cursor:pointer">启动</button>
+  <button id="btnStop" style="height:32px;padding:0 12px;border:none;border-radius:8px;background:var(--red);color:#fff;font-size:11px;font-weight:600;cursor:pointer;display:none">停止</button>
+  <select class="hdr-select" id="hdrSymbol"><option>BTC/USDT</option><option>ETH/USDT</option><option>SOL/USDT</option></select>
+  <select class="hdr-select" id="hdrExchange"><option>◆ Binance</option><option>◆ OKX</option><option>◆ Bybit</option></select>
+  <select class="hdr-select" id="hdrInterval"><option>15m</option><option>1H</option><option>4H</option><option>1D</option></select>
+  <div class="spacer"></div>
+  <div class="api-badge" id="hdrApi">API 12.4% (24/200)</div>
+  <div class="avatar" id="hdrAvatar">LA</div>
+</header>
+
+<!-- SIDEBAR -->
+<aside class="sidebar">
+  <div class="nav-item active" data-page="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg><span>仪表盘</span></div>
+  <div class="nav-item" data-page="market"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 17l5-6 4 4 7-9"/><polyline points="15 6 21 6 21 12"/></svg><span>市场数据</span></div>
+  <div class="nav-item" data-page="heatmap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><span>清算地图</span></div>
+  <div class="nav-item" data-page="strategy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6M7 12H1"/></svg><span>策略配置</span></div>
+  <div class="nav-item" data-page="orders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><span>订单</span></div>
+  <div class="nav-item" data-page="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span>事件流</span></div>
+  <div class="nav-item" data-page="analyze"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>数据解读</span></div>
+  <div class="nav-item" data-page="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>策略对话</span></div>
+  <div class="nav-item" data-page="evolution"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v6m0 8v6M4.93 4.93l4.24 4.24m5.66 5.66l4.24 4.24M2 12h6m8 0h6M4.93 19.07l4.24-4.24m5.66-5.66l4.24-4.24"/></svg><span>自进化</span></div>
+  <div class="nav-item" data-page="xtrend"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 2h3l-7.5 8.57L22 22h-6.63l-5.2-6.79L4.2 22H1.2l8.03-9.17L1 2h6.8l4.7 6.21z"/></svg><span>X 热度</span></div>
+  <div class="nav-item" data-page="grok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><circle cx="9" cy="10" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/></svg><span>Grok 分析师</span></div>
+  <div class="nav-item" data-page="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg><span>日志</span></div>
+  <div class="nav-item" data-page="pipeline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 19V5M5 12l7-7 7 7"/><path d="M3 21h18"/></svg><span>推文流水线</span></div>
+  <div class="nav-item" data-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9"/></svg><span>设置</span></div>
+</aside>
+
+<!-- MAIN -->
+<main class="main">
+  <!-- ===== DASHBOARD ===== -->
+  <section id="page-home" class="page active">
+
+    <!-- 6 KPI Cards -->
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 3 20 12 6 21"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">策略状态</div><div class="kpi-value" style="color:var(--text-3)" id="kpiPhase">未连接</div><div class="kpi-sub" id="kpiPhaseSub">等待配置</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">当前交易对</div><div class="kpi-value" id="kpiSymbol">—</div><div class="kpi-sub" id="kpiExchange">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">账户余额</div><div class="kpi-value" id="kpiBalance">—<span class="unit">USDT</span></div><div class="kpi-sub" id="kpiBalanceSub">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">今日盈亏</div><div class="kpi-value" id="kpiToday">—<span class="unit">USDT</span></div><div class="kpi-sub" id="kpiTodayPct">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">累计盈亏</div><div class="kpi-value" id="kpiTotal">—<span class="unit">USDT</span></div><div class="kpi-sub" id="kpiTotalPct">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--amber-soft);color:var(--amber)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">风险等级</div><div class="kpi-value" style="color:var(--text-3)" id="kpiRisk">—</div><div class="kpi-sub" id="kpiRiskSub">—</div></div>
+      </div>
+    </div>
+
+    <!-- Mid row: Heatmap | Signals | AI -->
+    <div class="dash-mid">
+      <!-- Heatmap -->
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">清算地图概览 <span class="info">i</span></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <div class="hm-tabs" id="hmTimeTabs">
+              <button class="active">15m</button><button>1H</button><button>4H</button><button>1D</button>
+            </div>
+            <button class="card-action" id="btnHmFull">⛶ 全屏</button>
+          </div>
+        </div>
+        <div class="hm-legend">
+          <span>清算强度</span><span style="font-size:10px">低</span><div class="grad"></div><span style="font-size:10px">高</span>
+          <span style="margin-left:14px"><span class="line-swatch"></span> 价格</span>
+        </div>
+        <div id="dashHmChart" class="hm-canvas"></div>
+      </div>
+
+      <!-- Signals 2x2 -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">策略信号 <span class="info">i</span></div></div>
+        <div class="sig-grid" id="signalGrid">
+          <div class="sig-card">
+            <div class="sig-head">
+              <div class="sig-name"><span class="sig-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg></span>做多信号</div>
+              <span class="sig-tag watch">—</span>
+            </div>
+            <div class="sig-pct">—</div>
+            <div class="sig-info">等待数据</div>
+          </div>
+          <div class="sig-card">
+            <div class="sig-head">
+              <div class="sig-name"><span class="sig-icon" style="background:var(--red-soft);color:var(--red)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/></svg></span>做空信号</div>
+              <span class="sig-tag watch">—</span>
+            </div>
+            <div class="sig-pct">—</div>
+            <div class="sig-info">等待数据</div>
+          </div>
+          <div class="sig-card">
+            <div class="sig-head">
+              <div class="sig-name"><span class="sig-icon" style="background:var(--blue-soft);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/></svg></span>突破信号</div>
+              <span class="sig-tag watch">—</span>
+            </div>
+            <div class="sig-pct">—</div>
+            <div class="sig-info">等待数据</div>
+          </div>
+          <div class="sig-card">
+            <div class="sig-head">
+              <div class="sig-name"><span class="sig-icon" style="background:#f3f4f6;color:var(--text-3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9M3 4v8h8"/></svg></span>反转信号</div>
+              <span class="sig-tag watch">—</span>
+            </div>
+            <div class="sig-pct">—</div>
+            <div class="sig-info">等待数据</div>
+          </div>
+        </div>
+        <div style="font-size:10.5px;color:var(--text-3);margin-top:8px;display:flex;justify-content:space-between">
+          <span>信号基于清算热力、订单簿失衡、多周期趋势等 12 项因子综合计算</span>
+          <span>更新时间 <span id="sigUpdated">09:32:14</span> ↻</span>
+        </div>
+      </div>
+
+      <!-- AI Learning -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">AI 学习状态 <span class="info">i</span></div></div>
+        <div class="ai-donut-wrap">
+          <div class="ai-donut">
+            <svg width="130" height="130">
+              <circle class="bg" cx="65" cy="65" r="55" stroke-width="10" fill="none"/>
+              <circle class="fg" id="aiRing" cx="65" cy="65" r="55" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="345.6" stroke-dashoffset="95.4"/>
+            </svg>
+            <div class="ai-donut-center">
+              <div class="lbl">模型准确率</div>
+              <div class="val" id="aiPct">72.4%</div>
+              <div class="delta" id="aiDelta">+3.8% (7天)</div>
+            </div>
+          </div>
+        </div>
+        <div class="ai-train">
+          <div class="ai-train-row"><span>训练进度</span><span class="pct" id="aiTrainPct">68%</span></div>
+          <div class="ai-bar"><div class="ai-bar-fg" id="aiTrainBar" style="width:68%"></div></div>
+          <div class="ai-eta">下一轮完成预计 <span id="aiEta">02:17:34</span></div>
+        </div>
+        <div class="ai-meta-grid">
+          <div class="ai-meta-cell"><div class="ml">最近学习样本</div><div class="mv" id="aiSamples">1,842</div><div class="md">+126 (24h)</div></div>
+          <div class="ai-meta-cell"><div class="ml">特征维度</div><div class="mv" id="aiDims">256</div><div class="mu">使用中</div></div>
+        </div>
+        <div class="ai-link" id="btnAiDetail">查看学习详情 ›</div>
+      </div>
+    </div>
+
+    <!-- Bottom row: Trades | Performance | Risk -->
+    <div class="dash-bot">
+      <!-- Recent trades -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">最近成交</div><button class="card-action" data-nav="orders">查看全部成交 ›</button></div>
+        <table class="tbl">
+          <thead><tr><th>时间</th><th>方向</th><th>交易对</th><th>类型</th><th>价格</th><th>数量</th><th>盈亏(USDT)</th><th>状态</th></tr></thead>
+          <tbody id="dashRecentOrders"><tr><td colspan="8" style="text-align:center;color:var(--text-3);padding:20px">启动 Agent 后显示实时数据</td></tr></tbody>
+        </table>
+        <div class="view-all" data-nav="orders">查看全部成交 ›</div>
+      </div>
+
+      <!-- Performance -->
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">策略表现 <span class="info">i</span></div>
+          <div class="perf-tabs" id="perfTabs"><button class="active">累计收益</button><button>收益率</button><button>回撤</button></div>
+        </div>
+        <div id="perfChart" class="perf-chart"></div>
+        <div class="perf-stats">
+          <div class="perf-stat"><div class="pl">累计收益(USDT)</div><div class="pv" id="perfCum"><span id="perfCumPnl">—</span></div></div>
+          <div class="perf-stat"><div class="pl">收益率</div><div class="pv" id="perfRoi"><span id="perfReturnPct">—</span></div></div>
+          <div class="perf-stat"><div class="pl">最大回撤</div><div class="pv" id="perfDd"><span id="perfMaxDD">—</span></div></div>
+          <div class="perf-stat"><div class="pl">胜率</div><div class="pv" id="perfWin"><span id="perfWinRate">—</span></div></div>
+          <div class="perf-stat"><div class="pl">交易次数</div><div class="pv" id="perfCount"><span id="perfTradeCount">—</span></div></div>
+        </div>
+      </div>
+
+      <!-- Risk monitor -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">风险监控</div></div>
+        <div id="riskGauge" class="risk-gauge"></div>
+        <div class="risk-stats">
+          <div class="risk-row"><div class="rl"><span class="dot" style="background:var(--purple)"></span>资金使用率</div><div class="rv" id="riskUsage"><span id="riskCapUsage">—</span></div></div>
+          <div class="risk-row"><div class="rl"><span class="dot" style="background:var(--green)"></span>杠杆倍数</div><div class="rv" id="riskLev"><span id="riskLeverage">—</span></div></div>
+          <div class="risk-row"><div class="rl"><span class="dot" style="background:var(--amber)"></span>最大回撤</div><div class="rv" id="riskDd"><span id="riskMaxDD">—</span></div></div>
+          <div class="risk-row"><div class="rl"><span class="dot" style="background:var(--red)"></span>VaR (95%)</div><div class="rv" id="riskVar"><span id="riskVaR">—</span></div></div>
+        </div>
+        <div class="notif-section">
+          <div class="notif-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/></svg>系统通知</div>
+          <div id="notifList">
+            <div id="dashNotifications" style="font-size:11.5px;color:var(--text-3);padding:8px">启动后显示实时通知</div>
+          </div>
+          <div class="view-all" data-nav="events">查看全部通知 ›</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Other pages placeholder -->
+  <section id="page-market" class="page">
+    <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">市场数据</h1><p style="color:var(--text-2);font-size:13px">实时行情、板块轮动与资金流向监控</p></div>
+
+    <!-- 6 KPI -->
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--amber-soft);color:var(--amber)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">BTC 价格</div><div class="kpi-value" id="mktBtcPrice">—</div><div class="kpi-sub" id="mktBtcChg">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--blue-soft);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">ETH 价格</div><div class="kpi-value" id="mktEthPrice">—</div><div class="kpi-sub" id="mktEthChg">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">总市值</div><div class="kpi-value"><span id="mktCap">—</span><span class="unit">T</span></div><div class="kpi-sub pos">+1.42%</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">24h 成交量</div><div class="kpi-value"><span id="mktVol">—</span><span class="unit">B</span></div><div class="kpi-sub pos">+12.6%</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--amber-soft);color:var(--amber)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">恐惧贪婪指数</div><div class="kpi-value" style="color:var(--green)"><span id="mktFearGreed">—</span></div><div class="kpi-sub">贪婪</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">BTC 波动率</div><div class="kpi-value"><span id="mktVolatility">—</span><span class="unit">%</span></div><div class="kpi-sub neg">高于均值</div></div>
+      </div>
+    </div>
+
+    <!-- Price chart + sentiment -->
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">价格走势</div>
+          <div class="hm-tabs">
+            <button class="active">1H</button><button>4H</button><button>1D</button><button>1W</button>
+          </div>
+        </div>
+        <div id="mktPriceChart" style="height:280px"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title">市场情绪</div></div>
+        <div id="mktSentimentGauge" style="height:140px"></div>
+        <div style="display:grid;gap:8px;margin-top:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">多空比</span><span style="font-family:var(--mono);font-weight:600;color:var(--green)">1.24</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">资金费率</span><span style="font-family:var(--mono);font-weight:600;color:var(--green)">+0.012%</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">持仓量变化</span><span style="font-family:var(--mono);font-weight:600;color:var(--green)">+5.8%</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">大户净流入</span><span style="font-family:var(--mono);font-weight:600;color:var(--green)">+$42.6M</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sectors + Flows -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">板块表现</div><button class="card-action">查看全部 ›</button></div>
+        <div style="display:grid;gap:6px" id="mktSectors">
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:8px">
+            <span style="font-size:12px;font-weight:600;width:60px">Layer1</span>
+            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:72%;height:100%;background:var(--green);border-radius:3px"></div></div>
+            <span style="font-size:12px;font-family:var(--mono);color:var(--green);font-weight:600;width:50px;text-align:right">+4.2%</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:8px">
+            <span style="font-size:12px;font-weight:600;width:60px">DeFi</span>
+            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:58%;height:100%;background:var(--green);border-radius:3px"></div></div>
+            <span style="font-size:12px;font-family:var(--mono);color:var(--green);font-weight:600;width:50px;text-align:right">+3.1%</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:8px">
+            <span style="font-size:12px;font-weight:600;width:60px">AI</span>
+            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:85%;height:100%;background:var(--green);border-radius:3px"></div></div>
+            <span style="font-size:12px;font-family:var(--mono);color:var(--green);font-weight:600;width:50px;text-align:right">+6.8%</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:8px">
+            <span style="font-size:12px;font-weight:600;width:60px">Meme</span>
+            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:35%;height:100%;background:var(--red);border-radius:3px"></div></div>
+            <span style="font-size:12px;font-family:var(--mono);color:var(--red);font-weight:600;width:50px;text-align:right">-2.1%</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:8px">
+            <span style="font-size:12px;font-weight:600;width:60px">Layer2</span>
+            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:48%;height:100%;background:var(--green);border-radius:3px"></div></div>
+            <span style="font-size:12px;font-family:var(--mono);color:var(--green);font-weight:600;width:50px;text-align:right">+2.4%</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:8px">
+            <span style="font-size:12px;font-weight:600;width:60px">GameFi</span>
+            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:25%;height:100%;background:var(--red);border-radius:3px"></div></div>
+            <span style="font-size:12px;font-family:var(--mono);color:var(--red);font-weight:600;width:50px;text-align:right">-1.5%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">资金流向</div><div class="hm-tabs"><button class="active">24h</button><button>7d</button><button>30d</button></div></div>
+        <div id="mktFlowChart" style="height:200px"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+          <div style="padding:8px;background:var(--green-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">净流入</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--green)">+$128.4M</div></div>
+          <div style="padding:8px;background:var(--red-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">净流出</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red)">-$86.2M</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Volatility + Top movers -->
+    <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:12px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">波动率趋势</div></div>
+        <div id="mktVolChart" style="height:180px"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title">涨跌幅 Top 5</div></div>
+        <table class="tbl" style="font-size:12px">
+          <thead><tr><th>币种</th><th>价格</th><th>24h</th><th>成交量</th></tr></thead>
+          <tbody>
+            <tr><td style="font-weight:600">PEPE</td><td style="font-family:var(--mono)">0.00001247</td><td class="pos" style="font-weight:600">+18.4%</td><td style="font-family:var(--mono)">$2.1B</td></tr>
+            <tr><td style="font-weight:600">WIF</td><td style="font-family:var(--mono)">3.42</td><td class="pos" style="font-weight:600">+12.7%</td><td style="font-family:var(--mono)">$890M</td></tr>
+            <tr><td style="font-weight:600">FET</td><td style="font-family:var(--mono)">2.18</td><td class="pos" style="font-weight:600">+9.3%</td><td style="font-family:var(--mono)">$456M</td></tr>
+            <tr><td style="font-weight:600">ONDO</td><td style="font-family:var(--mono)">1.34</td><td class="pos" style="font-weight:600">+8.1%</td><td style="font-family:var(--mono)">$312M</td></tr>
+            <tr><td style="font-weight:600">LUNA</td><td style="font-family:var(--mono)">0.87</td><td class="neg" style="font-weight:600">-14.2%</td><td style="font-family:var(--mono)">$1.8B</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  <section id="page-heatmap" class="page">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">
+      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">清算地图</h1><p style="color:var(--text-2);font-size:13px">多周期清算带识别与关键价格区分析</p></div>
+      <div style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-3)">
+        <span>最后更新: <span id="hmLastUpdate">06-20 14:17:34</span></span>
+        <button class="card-action" id="btnHmRefresh">↻ 刷新</button>
+        <button class="card-action">⇧ 分享</button>
+        <button class="card-action">⛶</button>
+      </div>
+    </div>
+
+    <!-- Filter row -->
+    <div class="card" style="margin-bottom:12px;padding:14px 16px">
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;align-items:end">
+        <div><div style="font-size:11px;color:var(--text-3);margin-bottom:4px">交易对</div><select class="hdr-select" style="width:100%" id="hmSym"><option>BTC/USDT</option><option>ETH/USDT</option><option>SOL/USDT</option></select></div>
+        <div><div style="font-size:11px;color:var(--text-3);margin-bottom:4px">交易所</div><select class="hdr-select" style="width:100%" id="hmExch"><option>Binance</option><option>OKX</option><option>Bybit</option></select></div>
+        <div><div style="font-size:11px;color:var(--text-3);margin-bottom:4px">时间周期</div><select class="hdr-select" style="width:100%" id="hmInt"><option>15m</option><option>1H</option><option>4H</option><option>1D</option></select></div>
+        <div><div style="font-size:11px;color:var(--text-3);margin-bottom:4px">杠杆倍数</div><select class="hdr-select" style="width:100%" id="hmLev"><option>25x</option><option>50x</option><option>100x</option></select></div>
+        <div><div style="font-size:11px;color:var(--text-3);margin-bottom:4px">显示模式</div><select class="hdr-select" style="width:100%"><option>🟪 强度热力</option><option>累计清算</option></select></div>
+        <div><div style="font-size:11px;color:var(--text-3);margin-bottom:4px">色阶范围</div><select class="hdr-select" style="width:100%"><option>自动</option><option>90%</option><option>95%</option></select></div>
+      </div>
+    </div>
+
+    <!-- Main: heatmap + zones table -->
+    <div style="display:grid;grid-template-columns:1.7fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">清算地图 <span style="color:var(--text-3);font-weight:400;font-size:12px">(BTC/USDT · 15m · Binance · 25x)</span></div>
+          <div style="display:flex;align-items:center;gap:12px;font-size:11px;color:var(--text-3)">
+            <span>清算强度</span><span>低</span><div class="grad" style="width:80px;height:8px;border-radius:4px;background:linear-gradient(90deg,#1a1a4e,#3d3d9e,#6c5ce7,#f39c12,#e74c3c)"></div><span>高</span>
+            <span style="margin-left:10px">强度百分位</span>
+            <select class="hdr-select" style="padding:2px 20px 2px 8px;height:24px;font-size:11px"><option>90%</option><option>95%</option></select>
+          </div>
+        </div>
+        <div id="hmDetailChart" style="height:380px;background:#1a1a2e;border-radius:8px;overflow:hidden"></div>
+        <div style="font-size:10.5px;color:var(--text-3);margin-top:6px">注：热力图基于合约订单簿清算估算，颜色越亮代表清算强度越高</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">关键清算区 <span class="info">i</span></div></div>
+        <table class="tbl" style="font-size:12px">
+          <thead><tr><th>价格区间 (USDT)</th><th>强度</th><th>预计影响</th><th>备注</th></tr></thead>
+          <tbody id="hmZonesBody">
+            <tr><td style="font-weight:600">73,800 – 74,600</td><td><span style="color:var(--red)">● 极强</span></td><td>上攻阻力</td><td style="color:var(--text-2)">上方密集空头清算带</td></tr>
+            <tr><td style="font-weight:600">71,200 – 71,800</td><td><span style="color:var(--amber)">● 中强</span></td><td>短线阻力</td><td style="color:var(--text-2)">近期高点清算集区</td></tr>
+            <tr><td style="font-weight:600">68,200 – 68,800</td><td><span style="color:var(--red)">● 极强</span></td><td>多空分水岭</td><td style="color:var(--text-2)">当前价格附近密集区</td></tr>
+            <tr><td style="font-weight:600">65,100 – 65,700</td><td><span style="color:var(--amber)">● 中强</span></td><td>下方支撑</td><td style="color:var(--text-2)">下方多头清算带</td></tr>
+            <tr><td style="font-weight:600">62,300 – 62,900</td><td><span style="color:var(--red)">● 极强</span></td><td>强支撑</td><td style="color:var(--text-2)">历史低位清算密集</td></tr>
+          </tbody>
+        </table>
+        <div class="view-all" style="margin-top:10px">查看全部清算区 (12) ›</div>
+      </div>
+    </div>
+
+    <!-- Bottom 3-col: stats | alerts | correlation -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:12px;margin-bottom:12px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">清算族统计</div></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">总清算族数</div><div style="font-size:18px;font-weight:700;font-family:var(--mono)">1,642</div><div style="font-size:10.5px;color:var(--green-text)">较昨日 +126 (8.31%)</div></div>
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">累计清算强度 (90%)</div><div style="font-size:18px;font-weight:700;font-family:var(--mono)">256.8M<span style="font-size:11px;color:var(--text-3);font-weight:400"> USDT</span></div><div style="font-size:10.5px;color:var(--green-text)">较昨日 +18.7M</div></div>
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">最大清算族</div><div style="font-size:14px;font-weight:700;font-family:var(--mono)">74,210 – 74,450</div><div style="font-size:10.5px;color:var(--text-3)">强度 18.6M USDT</div></div>
+        </div>
+        <div style="font-size:11px;color:var(--text-2);margin-bottom:6px">强度分布</div>
+        <div style="display:flex;height:28px;border-radius:6px;overflow:hidden">
+          <div style="width:18.7%;background:#e74c3c;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600">18.7%</div>
+          <div style="width:28.4%;background:#f39c12;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600">28.4%</div>
+          <div style="width:34.6%;background:#6c5ce7;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600">34.6%</div>
+          <div style="width:18.3%;background:#0984e3;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600">18.3%</div>
+        </div>
+        <div style="display:flex;gap:14px;margin-top:8px;font-size:11px;color:var(--text-3)">
+          <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#e74c3c;margin-right:4px"></span>极强 18.7%</span>
+          <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#f39c12;margin-right:4px"></span>强 28.4%</span>
+          <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#6c5ce7;margin-right:4px"></span>中 34.6%</span>
+          <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#0984e3;margin-right:4px"></span>弱 18.3%</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">大额清算提醒 <span class="info">i</span></div></div>
+        <table class="tbl" style="font-size:11.5px">
+          <thead><tr><th>价格 (USDT)</th><th>方向</th><th>强度 (USDT)</th><th>触发条件</th><th>时间</th></tr></thead>
+          <tbody>
+            <tr><td class="neg" style="font-weight:600">74,210</td><td>空头清算</td><td class="neg" style="font-weight:600">18.6M</td><td>≥ 74,200</td><td>14:10:22</td></tr>
+            <tr><td class="pos" style="font-weight:600">68,432</td><td>多头清算</td><td class="pos" style="font-weight:600">12.4M</td><td>≤ 68,450</td><td>14:05:11</td></tr>
+            <tr><td class="pos" style="font-weight:600">65,371</td><td>多头清算</td><td class="pos" style="font-weight:600">9.7M</td><td>≤ 65,400</td><td>13:52:47</td></tr>
+            <tr><td class="pos" style="font-weight:600">62,580</td><td>多头清算</td><td class="pos" style="font-weight:600">8.9M</td><td>≤ 62,600</td><td>13:41:02</td></tr>
+          </tbody>
+        </table>
+        <div class="view-all">查看全部提醒 (8) ›</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">价格与清算密度相关性</div></div>
+        <div id="hmCorrChart" style="height:160px"></div>
+        <div style="display:flex;gap:14px;font-size:11px;color:var(--text-3);margin-top:6px">
+          <span><span style="display:inline-block;width:10px;height:2px;background:var(--purple);vertical-align:middle;margin-right:4px"></span>价格 (USDT)</span>
+          <span><span style="display:inline-block;width:10px;height:8px;background:var(--green);vertical-align:middle;margin-right:4px;border-radius:1px"></span>清算密度 (90%)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- History signals -->
+    <div class="card">
+      <div class="card-head"><div class="card-title">历史信号对照</div><button class="card-action">查看全部历史信号 (28) ›</button></div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">
+        <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--green)">
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">● 06-19 21:15</div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:4px">突破强清算区 68,200 – 68,800</div>
+          <div style="font-size:11px;color:var(--green-text)">↗ 后续上涨 2.31%</div>
+        </div>
+        <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--red)">
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">● 06-19 18:40</div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:4px">触及清算区 65,100 – 65,700</div>
+          <div style="font-size:11px;color:var(--red-text)">↘ 后续下跌 1.87%</div>
+        </div>
+        <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--purple)">
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">● 06-19 12:05</div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:4px">触及清算区 71,200 – 71,800</div>
+          <div style="font-size:11px;color:var(--green-text)">↗ 后续上涨 1.24%</div>
+        </div>
+        <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--green)">
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">● 06-19 08:30</div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:4px">突破强清算区 73,800 – 74,600</div>
+          <div style="font-size:11px;color:var(--green-text)">↗ 后续上涨 3.12%</div>
+        </div>
+        <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--red)">
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">● 06-19 03:20</div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:4px">触及清算区 62,300 – 62,900</div>
+          <div style="font-size:11px;color:var(--green-text)">↗ 后续上涨 2.78%</div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="page-strategy" class="page">
+    <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">策略配置</h1><p style="color:var(--text-2);font-size:13px">清算反向策略参数调整与回测预览</p></div>
+
+    <!-- 4 KPI -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">当前策略</div><div class="kpi-value" style="font-size:16px">清算反向 v2.1</div><div class="kpi-sub">运行 14 天</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">运行环境</div><div class="kpi-value" style="font-size:16px">实盘 · Binance</div><div class="kpi-sub pos">连接正常</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--amber-soft);color:var(--amber)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">风险等级</div><div class="kpi-value" style="font-size:16px;color:var(--amber)">中等</div><div class="kpi-sub">最大回撤 8.2%</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--blue-soft);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">最近回测表现</div><div class="kpi-value" style="font-size:16px;color:var(--green)">+18.7%</div><div class="kpi-sub">30 天 · 胜率 64.2%</div></div>
+      </div>
+    </div>
+
+    <!-- 3-col: form | flowchart | preview -->
+    <div style="display:grid;grid-template-columns:1.2fr 1fr 0.9fr;gap:12px;margin-bottom:16px">
+      <!-- Left: config form -->
+      <div class="card" style="max-height:520px;overflow-y:auto">
+        <div class="card-head"><div class="card-title">参数配置</div><button class="card-action" id="btnResetStrategy">↺ 重置默认</button></div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:12px;font-weight:600;color:var(--purple);margin-bottom:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>入场条件</div>
+          <div style="display:grid;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">清算强度阈值</span><span style="font-size:12px;font-family:var(--mono);color:var(--purple);font-weight:600">85%</span></div>
+            <input type="range" min="50" max="99" value="85" style="width:100%;accent-color:var(--purple)">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">价格偏离度</span><span style="font-size:12px;font-family:var(--mono);color:var(--purple);font-weight:600">1.5%</span></div>
+            <input type="range" min="0" max="50" value="15" style="width:100%;accent-color:var(--purple)">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">最小清算族数</span><span style="font-size:12px;font-family:var(--mono);color:var(--purple);font-weight:600">3</span></div>
+            <input type="range" min="1" max="10" value="3" style="width:100%;accent-color:var(--purple)">
+          </div>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:12px;font-weight:600;color:var(--green);margin-bottom:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>离场条件</div>
+          <div style="display:grid;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">止盈比例</span><span style="font-size:12px;font-family:var(--mono);color:var(--green);font-weight:600">2.5%</span></div>
+            <input type="range" min="5" max="100" value="25" style="width:100%;accent-color:var(--green)">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">止损比例</span><span style="font-size:12px;font-family:var(--mono);color:var(--red);font-weight:600">1.2%</span></div>
+            <input type="range" min="3" max="50" value="12" style="width:100%;accent-color:var(--red)">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">最大持仓时间</span><span style="font-size:12px;font-family:var(--mono);font-weight:600">4h</span></div>
+            <input type="range" min="1" max="24" value="4" style="width:100%;accent-color:var(--purple)">
+          </div>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:12px;font-weight:600;color:var(--amber);margin-bottom:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a4 4 0 00-8 0v2"/></svg>仓位管理</div>
+          <div style="display:grid;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">单笔仓位</span><span style="font-size:12px;font-family:var(--mono);font-weight:600">5%</span></div>
+            <input type="range" min="1" max="20" value="5" style="width:100%;accent-color:var(--amber)">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">最大同时持仓</span><span style="font-size:12px;font-family:var(--mono);font-weight:600">3</span></div>
+            <input type="range" min="1" max="10" value="3" style="width:100%;accent-color:var(--amber)">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">杠杆倍数</span><span style="font-size:12px;font-family:var(--mono);font-weight:600">5x</span></div>
+            <input type="range" min="1" max="20" value="5" style="width:100%;accent-color:var(--amber)">
+          </div>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>风险控制</div>
+          <div style="display:grid;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">日最大亏损</span><span style="font-size:12px;font-family:var(--mono);color:var(--red);font-weight:600">3%</span></div>
+            <input type="range" min="1" max="10" value="3" style="width:100%;accent-color:var(--red)">
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12px;color:var(--text-2)">连续亏损暂停</span><span style="font-size:12px;font-family:var(--mono);font-weight:600">3 次</span></div>
+            <input type="range" min="1" max="10" value="3" style="width:100%;accent-color:var(--red)">
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--blue);margin-bottom:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>过滤条件</div>
+          <div style="display:grid;gap:6px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">排除重大新闻时段</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">排除低流动性时段</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" style="accent-color:var(--purple)">仅交易 BTC/ETH</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">波动率过滤 (ATR &gt; 1.5%)</label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Middle: strategy flowchart -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">策略逻辑流程</div></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0">
+          <div style="padding:10px 20px;background:var(--purple-soft);border:1px solid var(--purple-mid);border-radius:8px;font-size:12px;font-weight:600;color:var(--purple-dark);text-align:center">数据采集<br><span style="font-weight:400;font-size:11px;color:var(--text-3)">CoinAnk 清算地图</span></div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" style="width:16px;height:16px"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+          <div style="padding:10px 20px;background:var(--blue-soft);border:1px solid #b3d9f2;border-radius:8px;font-size:12px;font-weight:600;color:var(--blue);text-align:center">信号识别<br><span style="font-weight:400;font-size:11px;color:var(--text-3)">清算族聚类 + 强度评分</span></div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" style="width:16px;height:16px"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+          <div style="padding:10px 20px;background:var(--amber-soft);border:1px solid #f5d9a0;border-radius:8px;font-size:12px;font-weight:600;color:var(--amber-text);text-align:center">LLM 决策<br><span style="font-weight:400;font-size:11px;color:var(--text-3)">Claude 分析 + 风控审核</span></div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" style="width:16px;height:16px"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+          <div style="padding:10px 20px;background:var(--green-soft);border:1px solid #a3e4d7;border-radius:8px;font-size:12px;font-weight:600;color:var(--green-text);text-align:center">订单执行<br><span style="font-weight:400;font-size:11px;color:var(--text-3)">Binance 合约下单</span></div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" style="width:16px;height:16px"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+          <div style="padding:10px 20px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:12px;font-weight:600;color:var(--text);text-align:center">持仓管理<br><span style="font-weight:400;font-size:11px;color:var(--text-3)">止盈止损 + 时间退出</span></div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" style="width:16px;height:16px"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+          <div style="padding:10px 20px;background:var(--orange-soft);border:1px solid #f5c4b8;border-radius:8px;font-size:12px;font-weight:600;color:var(--orange);text-align:center">自进化反馈<br><span style="font-weight:400;font-size:11px;color:var(--text-3)">结果回传 → 参数优化</span></div>
+        </div>
+      </div>
+
+      <!-- Right: preview + summary -->
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="card" style="flex:1">
+          <div class="card-head"><div class="card-title">实时预览</div></div>
+          <div id="strategyPreviewChart" style="height:180px;background:var(--surface-2);border-radius:8px"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;font-size:11.5px">
+            <div style="padding:8px;background:var(--surface-2);border-radius:6px"><span style="color:var(--text-3)">预期收益</span><div style="font-weight:700;font-family:var(--mono);color:var(--green)">+18.7%</div></div>
+            <div style="padding:8px;background:var(--surface-2);border-radius:6px"><span style="color:var(--text-3)">最大回撤</span><div style="font-weight:700;font-family:var(--mono);color:var(--red)">-8.2%</div></div>
+            <div style="padding:8px;background:var(--surface-2);border-radius:6px"><span style="color:var(--text-3)">夏普比率</span><div style="font-weight:700;font-family:var(--mono)">1.86</div></div>
+            <div style="padding:8px;background:var(--surface-2);border-radius:6px"><span style="color:var(--text-3)">交易次数</span><div style="font-weight:700;font-family:var(--mono)">47</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">参数摘要</div></div>
+          <div style="font-size:11.5px;display:grid;gap:6px">
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--text-3)">入场阈值</span><span style="font-family:var(--mono);font-weight:600">85% / 1.5%</span></div>
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--text-3)">止盈 / 止损</span><span style="font-family:var(--mono);font-weight:600">2.5% / 1.2%</span></div>
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--text-3)">仓位 / 杠杆</span><span style="font-family:var(--mono);font-weight:600">5% / 5x</span></div>
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--text-3)">日亏损上限</span><span style="font-family:var(--mono);font-weight:600;color:var(--red)">3%</span></div>
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--text-3)">盈亏比</span><span style="font-family:var(--mono);font-weight:600;color:var(--green)">2.08:1</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom: preset templates -->
+    <div class="card">
+      <div class="card-head"><div class="card-title">预设模板</div><button class="card-action">自定义模板 +</button></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+        <div style="padding:14px;border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><div style="width:28px;height:28px;border-radius:7px;background:var(--green-soft);display:grid;place-items:center"><svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" style="width:14px;height:14px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><span style="font-size:13px;font-weight:600">保守型</span></div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:8px">低风险、低频率，适合稳健投资者</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap"><span style="padding:2px 6px;background:var(--surface-2);border-radius:4px;font-size:10px;color:var(--text-3)">阈值 92%</span><span style="padding:2px 6px;background:var(--surface-2);border-radius:4px;font-size:10px;color:var(--text-3)">杠杆 2x</span><span style="padding:2px 6px;background:var(--surface-2);border-radius:4px;font-size:10px;color:var(--text-3)">止损 0.8%</span></div>
+        </div>
+        <div style="padding:14px;border:2px solid var(--purple);border-radius:10px;background:var(--purple-soft);cursor:pointer">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><div style="width:28px;height:28px;border-radius:7px;background:var(--purple-soft);border:1px solid var(--purple-mid);display:grid;place-items:center"><svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg></div><span style="font-size:13px;font-weight:600;color:var(--purple-dark)">平衡型</span><span style="font-size:10px;padding:2px 6px;background:var(--purple);color:#fff;border-radius:4px;margin-left:auto">当前</span></div>
+          <div style="font-size:11px;color:var(--text-2);margin-bottom:8px">风险收益均衡，适合大多数场景</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap"><span style="padding:2px 6px;background:#fff;border-radius:4px;font-size:10px;color:var(--purple-dark)">阈值 85%</span><span style="padding:2px 6px;background:#fff;border-radius:4px;font-size:10px;color:var(--purple-dark)">杠杆 5x</span><span style="padding:2px 6px;background:#fff;border-radius:4px;font-size:10px;color:var(--purple-dark)">止损 1.2%</span></div>
+        </div>
+        <div style="padding:14px;border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--red)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><div style="width:28px;height:28px;border-radius:7px;background:var(--red-soft);display:grid;place-items:center"><svg viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" style="width:14px;height:14px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><span style="font-size:13px;font-weight:600">激进型</span></div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:8px">高风险高收益，适合短线交易者</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap"><span style="padding:2px 6px;background:var(--surface-2);border-radius:4px;font-size:10px;color:var(--text-3)">阈值 75%</span><span style="padding:2px 6px;background:var(--surface-2);border-radius:4px;font-size:10px;color:var(--text-3)">杠杆 10x</span><span style="padding:2px 6px;background:var(--surface-2);border-radius:4px;font-size:10px;color:var(--text-3)">止损 2%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
+      <button style="padding:8px 20px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:13px;cursor:pointer">回测验证</button>
+      <button style="padding:8px 20px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:13px;font-weight:600;cursor:pointer">保存并应用</button>
+    </div>
+  </section>
+  <section id="page-orders" class="page">
+    <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">订单</h1><p style="color:var(--text-2);font-size:13px">订单管理、执行状态与成交明细</p></div>
+
+    <!-- 5 KPI -->
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">进行中 订单</div><div class="kpi-value">32</div><div class="kpi-sub pos">较昨日 +10.3%</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">已成交订单</div><div class="kpi-value">1,642</div><div class="kpi-sub pos">较昨日 +18.7%</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--orange-soft);color:var(--orange)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">今日成交额</div><div class="kpi-value">2,341,567.89<span class="unit">USDT</span></div><div class="kpi-sub pos">较昨日 +24.6%</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--blue-soft);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">平均持仓时长</div><div class="kpi-value">02:16:48</div><div class="kpi-sub neg">较昨日 -00:12:36</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">当前未实现盈亏</div><div class="kpi-value" id="riskUnrealizedPnl">—<span class="unit">USDT</span></div><div class="kpi-sub" id="riskUnrealizedPct">—</div></div>
+      </div>
+    </div>
+
+    <!-- Main: table + detail panel -->
+    <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="card">
+        <!-- Tabs -->
+        <div style="display:flex;gap:20px;border-bottom:1px solid var(--border);margin-bottom:12px">
+          <button style="padding:10px 2px;background:none;border:none;border-bottom:2px solid var(--purple);color:var(--purple-dark);font-size:13px;font-weight:500;cursor:pointer">当前订单</button>
+          <button style="padding:10px 2px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-3);font-size:13px;cursor:pointer">历史订单</button>
+          <button style="padding:10px 2px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-3);font-size:13px;cursor:pointer">条件单</button>
+        </div>
+        <!-- Search + actions -->
+        <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+          <input type="search" placeholder="🔍 搜索订单号 / 交易对 / 策略" style="flex:1;height:32px;padding:0 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;background:var(--surface)">
+          <button style="height:32px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:12px;cursor:pointer;color:var(--text-2)">⚲ 筛选</button>
+          <button style="height:32px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:12px;cursor:pointer;color:var(--text-2)">⬇ 导出</button>
+        </div>
+        <!-- Table -->
+        <table class="tbl">
+          <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>委托类型</th><th>数量</th><th>价格</th><th>成交均价</th><th>状态</th><th>盈亏(USDT)</th><th>来源策略</th></tr></thead>
+          <tbody id="ordersTableBody"><tr><td colspan="8" style="text-align:center;color:var(--text-3);padding:20px">暂无订单数据</td></tr></tbody>
+        </table>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding-top:12px;font-size:11.5px;color:var(--text-3)">
+          <span>共 32 条</span>
+          <div style="display:flex;align-items:center;gap:4px">
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);font-size:11px;cursor:pointer">‹</button>
+            <button style="padding:3px 8px;border:none;border-radius:4px;background:var(--purple);color:#fff;font-size:11px;cursor:pointer">1</button>
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);font-size:11px;cursor:pointer">2</button>
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);font-size:11px;cursor:pointer">3</button>
+            <span>…</span>
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);font-size:11px;cursor:pointer">4</button>
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);font-size:11px;cursor:pointer">›</button>
+            <select style="padding:2px 20px 2px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface)"><option>10 条/页</option></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: order detail -->
+      <div class="card">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
+          <div>
+            <div style="font-size:12px;color:var(--text-3);margin-bottom:4px">订单详情</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:14px;font-weight:600;font-family:var(--mono)">#20240602092814</span>
+              <span style="cursor:pointer;color:var(--text-3)">⎘</span>
+              <span class="tag" style="background:var(--purple-soft);color:var(--purple-dark)">部分成交</span>
+            </div>
+          </div>
+          <button style="background:none;border:none;cursor:pointer;color:var(--text-3);font-size:16px">✕</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;margin-bottom:14px;font-size:12px" id="orderDetailGrid">
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">交易对</div><div style="font-weight:500">—</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">创建时间</div><div style="font-family:var(--mono)">—</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">方向</div><div>—</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">当前状态</div><div>—</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">委托类型</div><div>—</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">已成交数量</div><div style="font-family:var(--mono)">—</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">委托数量</div><div style="font-family:var(--mono)">—</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">成交均价</div><div style="font-family:var(--mono)">—</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">委托价格</div><div style="font-family:var(--mono)">68,312.5</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">有效期</div><div>GTC</div></div>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px;font-weight:500">执行路径</div>
+          <div style="padding-left:12px;border-left:1px dashed var(--border);display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;gap:10px;position:relative"><span style="position:absolute;left:-17px;top:3px;width:10px;height:10px;border-radius:50%;background:var(--green);border:2px solid var(--surface)"></span><div style="font-family:var(--mono);font-size:11px;color:var(--text-3);width:60px">09:28:14</div><div><div style="font-size:12px;font-weight:500">订单创建</div><div style="font-size:11px;color:var(--text-3)">提交至 Binance</div></div></div>
+            <div style="display:flex;gap:10px;position:relative"><span style="position:absolute;left:-17px;top:3px;width:10px;height:10px;border-radius:50%;background:var(--green);border:2px solid var(--surface)"></span><div style="font-family:var(--mono);font-size:11px;color:var(--text-3);width:60px">09:28:15</div><div><div style="font-size:12px;font-weight:500">订单接收</div><div style="font-size:11px;color:var(--text-3)">Binance 已接收</div></div></div>
+            <div style="display:flex;gap:10px;position:relative"><span style="position:absolute;left:-17px;top:3px;width:10px;height:10px;border-radius:50%;background:var(--purple);border:2px solid var(--surface);box-shadow:0 0 0 3px rgba(108,92,231,.2)"></span><div style="font-family:var(--mono);font-size:11px;color:var(--text-3);width:60px">09:28:16</div><div><div style="font-size:12px;font-weight:500;color:var(--purple-dark)">部分成交</div><div style="font-size:11px;color:var(--text-3)">成交 0.072 BTC @ 68,298.7</div></div></div>
+            <div style="display:flex;gap:10px;position:relative"><span style="position:absolute;left:-17px;top:3px;width:10px;height:10px;border-radius:50%;background:var(--surface);border:2px solid var(--border)"></span><div style="font-family:var(--mono);font-size:11px;color:var(--text-3);width:60px">—</div><div><div style="font-size:12px;color:var(--text-3)">等待成交</div><div style="font-size:11px;color:var(--text-3)">剩余 0.080 BTC</div></div></div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;font-size:12px">
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">滑点</div><div style="font-family:var(--mono)">-0.020%</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">手续费</div><div style="font-family:var(--mono)">0.85 USDT</div></div>
+          <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">预估强平价</div><div style="font-family:var(--mono)">64,200.0</div></div>
+        </div>
+
+        <div style="padding:10px;background:var(--surface-2);border-radius:8px;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-size:11.5px;font-weight:500;color:var(--text-2)">风险备注</span><span class="tag" style="background:var(--amber-soft);color:var(--amber-text)">中等风险</span></div>
+          <div style="font-size:11.5px;color:var(--text-2);line-height:1.6">市场波动较大，建议关注支撑位 67,500 附近表现，注意止损控制。</div>
+        </div>
+
+        <div style="display:flex;gap:8px">
+          <button style="flex:1;padding:9px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:12px;cursor:pointer;color:var(--text-2)">取消订单</button>
+          <button style="flex:1;padding:9px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:12px;cursor:pointer;color:var(--text-2)">修改订单</button>
+          <button style="flex:1;padding:9px;border:none;border-radius:8px;background:var(--purple);font-size:12px;cursor:pointer;color:#fff;font-weight:500">平仓</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom: distribution + anomalies -->
+    <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:12px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">成交分布</div></div>
+        <div style="display:flex;align-items:center;gap:18px">
+          <div id="orderDistDonut" style="width:140px;height:140px;position:relative"></div>
+          <div style="display:flex;flex-direction:column;gap:10px;flex:1">
+            <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px"><div style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:var(--purple)"></span>限价单</div><div style="font-family:var(--mono)"><strong>65.3%</strong> <span style="color:var(--text-3)">(1,072)</span></div></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px"><div style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:var(--blue)"></span>市价单</div><div style="font-family:var(--mono)"><strong>24.7%</strong> <span style="color:var(--text-3)">(405)</span></div></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px"><div style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:var(--orange)"></span>条件单</div><div style="font-family:var(--mono)"><strong>10.0%</strong> <span style="color:var(--text-3)">(165)</span></div></div>
+          </div>
+        </div>
+        <div style="text-align:center;margin-top:10px;font-size:11px;color:var(--text-3)"><span style="font-size:20px;font-weight:700;color:var(--text);font-family:var(--mono)">1,642</span> 总成交</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">异常订单提醒</div></div>
+        <div style="display:flex;flex-direction:column;gap:1px;background:var(--border);border-radius:8px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:24px 120px 80px 1fr auto;gap:10px;padding:10px 12px;background:var(--surface);align-items:center;font-size:12px">
+            <span style="width:20px;height:20px;border-radius:5px;background:var(--red-soft);color:var(--red);display:grid;place-items:center"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg></span>
+            <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">06-02 09:26:33</span>
+            <span style="font-weight:500">ETH/USDT</span>
+            <span style="color:var(--text-2)">市价单滑点过高 · 滑点 1.82% 超过阈值 1.50%</span>
+            <span style="color:var(--purple-dark);font-size:11px;cursor:pointer">查看详情 ›</span>
+          </div>
+          <div style="display:grid;grid-template-columns:24px 120px 80px 1fr auto;gap:10px;padding:10px 12px;background:var(--surface);align-items:center;font-size:12px">
+            <span style="width:20px;height:20px;border-radius:5px;background:var(--amber-soft);color:var(--amber);display:grid;place-items:center"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></span>
+            <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">06-02 09:24:55</span>
+            <span style="font-weight:500">SOL/USDT</span>
+            <span style="color:var(--text-2)">订单长时间未成交 · 已挂单 15 分钟未成交</span>
+            <span style="color:var(--purple-dark);font-size:11px;cursor:pointer">查看详情 ›</span>
+          </div>
+          <div style="display:grid;grid-template-columns:24px 120px 80px 1fr auto;gap:10px;padding:10px 12px;background:var(--surface);align-items:center;font-size:12px">
+            <span style="width:20px;height:20px;border-radius:5px;background:var(--amber-soft);color:var(--amber);display:grid;place-items:center"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></span>
+            <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">06-02 09:20:18</span>
+            <span style="font-weight:500">BNB/USDT</span>
+            <span style="color:var(--text-2)">价格偏离预期 · 当前价格偏离委托价 2.35%</span>
+            <span style="color:var(--purple-dark);font-size:11px;cursor:pointer">查看详情 ›</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="page-events" class="page">
+    <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">事件流</h1><p style="color:var(--text-2);font-size:13px">AI 决策、系统状态与交易事件时间线</p></div>
+
+    <!-- 3 KPI -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">今日事件数</div><div class="kpi-value" id="evToday">1,842</div><div class="kpi-sub pos">较昨日 +18.7%</div></div>
+        <div style="width:80px;height:36px" id="evSpark1"></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--amber-soft);color:var(--amber)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">异常事件</div><div class="kpi-value" id="evAlert">32</div><div class="kpi-sub neg">较昨日 -5.9%</div></div>
+        <div style="width:80px;height:36px" id="evSpark2"></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">自动处理率</div><div class="kpi-value" id="evAuto">78.6%</div><div class="kpi-sub pos">较昨日 +6.3%</div></div>
+        <div style="width:80px;height:36px" id="evSpark3"></div>
+      </div>
+    </div>
+
+    <!-- Main: timeline + detail panel -->
+    <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px">
+      <!-- LEFT: filter + timeline -->
+      <div class="card">
+        <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap" id="evFilterTabs">
+          <button style="padding:6px 14px;background:var(--purple);color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer" class="active" data-evf="">全部</button>
+          <button style="padding:6px 14px;background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);border-radius:6px;font-size:12px;cursor:pointer" data-evf="signal">信号</button>
+          <button style="padding:6px 14px;background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);border-radius:6px;font-size:12px;cursor:pointer" data-evf="risk">风控</button>
+          <button style="padding:6px 14px;background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);border-radius:6px;font-size:12px;cursor:pointer" data-evf="order">执行</button>
+          <button style="padding:6px 14px;background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);border-radius:6px;font-size:12px;cursor:pointer" data-evf="llm_review">学习</button>
+          <button style="padding:6px 14px;background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);border-radius:6px;font-size:12px;cursor:pointer" data-evf="agent">系统</button>
+        </div>
+        <div id="evTimeline" style="display:flex;flex-direction:column;gap:1px;background:var(--border);border-radius:8px;overflow:hidden;max-height:560px;overflow-y:auto">
+          <div id="eventsListBody" style="padding:20px;text-align:center;color:var(--text-3)">暂无事件数据</div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding-top:12px;margin-top:12px;border-top:1px solid var(--border);font-size:11.5px;color:var(--text-3)">
+          <span>共 1,842 条</span>
+          <div style="display:flex;align-items:center;gap:4px">
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);cursor:pointer;font-size:11px">‹</button>
+            <button style="padding:3px 8px;border:none;border-radius:4px;background:var(--purple);color:#fff;cursor:pointer;font-size:11px">1</button>
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);cursor:pointer;font-size:11px">2</button>
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);cursor:pointer;font-size:11px">3</button>
+            <span>…</span>
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);cursor:pointer;font-size:11px">93</button>
+            <button style="padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);cursor:pointer;font-size:11px">›</button>
+            <select style="padding:2px 20px 2px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface)"><option>20 条/页</option><option>50 条/页</option></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: event detail panel -->
+      <div class="card" id="eventDetailCard">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <div style="width:36px;height:36px;border-radius:9px;background:var(--blue-soft);color:var(--blue);display:grid;place-items:center"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/></svg></div>
+            <div>
+              <div style="font-size:12px;color:var(--text-3);margin-bottom:3px">事件详情</div>
+              <div style="font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px">检测到高强度清算带 <span class="tag" style="background:var(--red-soft);color:var(--red-text)">高风险</span></div>
+              <div style="font-size:11.5px;color:var(--text-3);font-family:var(--mono);margin-top:4px">2024-06-02 09:42:31</div>
+              <div style="font-size:11.5px;color:var(--text-2);margin-top:4px">风控事件 · 自动检测</div>
+            </div>
+          </div>
+          <button style="background:none;border:none;cursor:pointer;color:var(--text-3);font-size:16px">✕</button>
+        </div>
+
+        <div style="padding:12px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--purple);margin-bottom:14px;font-size:12.5px;line-height:1.6;color:var(--text)">
+          BTC 现价接近 ¥68,500 附近强清算带，强度 8.7/10，建议降低杠杆敞口
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px;font-weight:500">上下文数据</div>
+          <table style="width:100%;font-size:11.5px;border-collapse:collapse">
+            <tr><td style="padding:5px 0;color:var(--text-3);width:30%">交易对</td><td style="padding:5px 0;font-family:var(--mono)">BTC/USDT</td><td style="padding:5px 0;color:var(--text-3);width:30%">时间周期</td><td style="padding:5px 0;font-family:var(--mono)">15m</td></tr>
+            <tr><td style="padding:5px 0;color:var(--text-3)">当前价格</td><td style="padding:5px 0;font-family:var(--mono)">68,362.50 USDT</td><td style="padding:5px 0;color:var(--text-3)">清算带价格</td><td style="padding:5px 0;font-family:var(--mono)">68,500 USDT</td></tr>
+            <tr><td style="padding:5px 0;color:var(--text-3)">清算强度</td><td style="padding:5px 0;font-family:var(--mono)">8.7 / 10</td><td style="padding:5px 0;color:var(--text-3)">影响方向</td><td style="padding:5px 0;font-family:var(--mono)">多头清算</td></tr>
+            <tr><td style="padding:5px 0;color:var(--text-3)">预计影响</td><td style="padding:5px 0;font-family:var(--mono);color:var(--red-text)">高</td><td style="padding:5px 0;color:var(--text-3)">置信度</td><td style="padding:5px 0;font-family:var(--mono)">82%</td></tr>
+          </table>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px;font-weight:500">关联订单 (1)</div>
+          <table class="tbl" style="font-size:11px">
+            <thead><tr><th>订单号</th><th>类型</th><th>方向</th><th>数量</th><th>价格</th><th>状态</th></tr></thead>
+            <tbody><tr><td>#879314</td><td>市价单</td><td><span class="tag tag-up">多</span></td><td>0.152 BTC</td><td>68,362.50</td><td><span class="tag tag-done">已成交</span></td></tr></tbody>
+          </table>
+          <div class="view-all" style="margin-top:6px">查看全部订单 ›</div>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px;font-weight:500">关联图表</div>
+          <div style="padding:8px;background:var(--surface-2);border-radius:8px">
+            <div style="font-size:11px;color:var(--text-2);margin-bottom:4px">BTC/USDT · 15m · ● 价格 · ● 清算强度</div>
+            <div id="evDetailChart" style="height:100px;background:#1a1a2e;border-radius:6px"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:11.5px;color:var(--text-3);margin-bottom:6px;font-weight:500">备注</div>
+          <div style="font-size:12px;color:var(--text-2);line-height:1.6">清算带密集，波动预计放大，已建议策略降低杠杆并设置防守单。</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;padding-top:10px;border-top:1px solid var(--border);font-size:10.5px;color:var(--text-3)">
+          <span>创建时间: 2024-06-02 09:42:31</span>
+          <span>事件ID: evt_20240602_094231</span>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="page-analyze" class="page">
+    <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">数据解读</h1><p style="color:var(--text-2);font-size:13px">AI 驱动的市场分析与策略建议</p></div>
+      <div style="display:flex;gap:8px">
+        <span id="analyzeStatus" style="font-size:11px;color:var(--text-3);display:flex;align-items:center">—</span>
+        <button id="btnRunAnalysis" style="padding:10px 20px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          AI 分析
+        </button>
+      </div>
+    </div>
+
+    <!-- Analysis cards row -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="card" style="border-left:3px solid var(--purple)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <div style="width:32px;height:32px;border-radius:8px;background:var(--purple-soft);display:grid;place-items:center"><svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:16px;height:16px"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 002 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg></div>
+          <div><div style="font-size:13px;font-weight:600">清算带分析</div><div style="font-size:11px;color:var(--text-3)" id="analyzeCardTime1">点击 AI 分析获取</div></div>
+        </div>
+        <div style="font-size:12px;color:var(--text-2);line-height:1.7" id="analyzeCard1">点击右上角「AI 分析」按钮，系统将基于实时数据生成清算带分析报告。</div>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px">
+          <span style="padding:2px 8px;background:var(--surface-2);color:var(--text-3);border-radius:4px;font-size:10px;font-weight:600" id="analyzeTag1">等待分析</span>
+          <span style="font-size:11px;color:var(--text-3)" id="analyzeConf1">—</span>
+        </div>
+      </div>
+
+      <div class="card" style="border-left:3px solid var(--green)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <div style="width:32px;height:32px;border-radius:8px;background:var(--green-soft);display:grid;place-items:center"><svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" style="width:16px;height:16px"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+          <div><div style="font-size:13px;font-weight:600">趋势判断</div><div style="font-size:11px;color:var(--text-3)" id="analyzeCardTime2">点击 AI 分析获取</div></div>
+        </div>
+        <div style="font-size:12px;color:var(--text-2);line-height:1.7" id="analyzeCard2">启动 Agent 并运行 AI 分析后，此处将显示趋势判断结果。</div>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px">
+          <span style="padding:2px 8px;background:var(--surface-2);color:var(--text-3);border-radius:4px;font-size:10px;font-weight:600" id="analyzeTag2">等待分析</span>
+          <span style="font-size:11px;color:var(--text-3)" id="analyzeConf2">—</span>
+        </div>
+      </div>
+
+      <div class="card" style="border-left:3px solid var(--amber)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <div style="width:32px;height:32px;border-radius:8px;background:var(--amber-soft);display:grid;place-items:center"><svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
+          <div><div style="font-size:13px;font-weight:600">风险提示</div><div style="font-size:11px;color:var(--text-3)" id="analyzeCardTime3">点击 AI 分析获取</div></div>
+        </div>
+        <div style="font-size:12px;color:var(--text-2);line-height:1.7" id="analyzeCard3">AI 分析后将在此显示当前风险提示和注意事项。</div>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px">
+          <span style="padding:2px 8px;background:var(--amber-soft);color:var(--amber-text);border-radius:4px;font-size:10px;font-weight:600">注意</span>
+          <span style="font-size:11px;color:var(--text-3)">影响等级 高</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main: detailed analysis + indicators -->
+    <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">综合分析报告</div><span style="font-size:11px;color:var(--text-3)" id="analyzeReportTime">—</span></div>
+        <div style="font-size:12.5px;color:var(--text-2);line-height:1.8" id="analyzeReport">
+          <p style="color:var(--text-3);text-align:center;padding:20px">点击右上角「AI 分析」按钮生成实时分析报告</p>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="card">
+          <div class="card-head"><div class="card-title">技术指标</div></div>
+          <div style="display:grid;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <span style="font-size:12px;color:var(--text-2)">RSI (14)</span>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;font-family:var(--mono);font-weight:600">68.4</span><span style="padding:2px 6px;background:var(--amber-soft);color:var(--amber-text);border-radius:3px;font-size:10px">接近超买</span></div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <span style="font-size:12px;color:var(--text-2)">MACD</span>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;font-family:var(--mono);font-weight:600;color:var(--green)">+124</span><span style="padding:2px 6px;background:var(--green-soft);color:var(--green-text);border-radius:3px;font-size:10px">金叉</span></div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <span style="font-size:12px;color:var(--text-2)">布林带</span>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;font-family:var(--mono);font-weight:600">中轨上方</span><span style="padding:2px 6px;background:var(--green-soft);color:var(--green-text);border-radius:3px;font-size:10px">偏多</span></div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <span style="font-size:12px;color:var(--text-2)">ATR (14)</span>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;font-family:var(--mono);font-weight:600">1,842</span><span style="padding:2px 6px;background:var(--amber-soft);color:var(--amber-text);border-radius:3px;font-size:10px">波动偏高</span></div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <span style="font-size:12px;color:var(--text-2)">OBV</span>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;font-family:var(--mono);font-weight:600;color:var(--green)">↑ 上升</span><span style="padding:2px 6px;background:var(--green-soft);color:var(--green-text);border-radius:3px;font-size:10px">量价配合</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">信号强度</div></div>
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+            <div style="flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden"><div style="width:72%;height:100%;background:linear-gradient(90deg,var(--green),var(--purple));border-radius:4px"></div></div>
+            <span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--purple)">72%</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-3)">综合 5 项指标，当前信号偏多，建议执行清算反向做多策略</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- History analysis -->
+    <div class="card">
+      <div class="card-head"><div class="card-title">历史分析记录</div><button class="card-action">查看全部 ›</button></div>
+      <div style="display:grid;gap:8px">
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--surface-2);border-radius:8px">
+          <div style="width:6px;height:6px;border-radius:50%;background:var(--green)"></div>
+          <span style="font-size:12px;color:var(--text-3);font-family:var(--mono);width:120px">06-20 14:00</span>
+          <span style="font-size:12px;flex:1">检测到 68,200 清算带做多信号，建议入场</span>
+          <span style="padding:2px 8px;background:var(--green-soft);color:var(--green-text);border-radius:4px;font-size:10px;font-weight:600">已验证 +2.3%</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--surface-2);border-radius:8px">
+          <div style="width:6px;height:6px;border-radius:50%;background:var(--red)"></div>
+          <span style="font-size:12px;color:var(--text-3);font-family:var(--mono);width:120px">06-20 10:30</span>
+          <span style="font-size:12px;flex:1">CPI 前波动率预警，建议暂停交易</span>
+          <span style="padding:2px 8px;background:var(--amber-soft);color:var(--amber-text);border-radius:4px;font-size:10px;font-weight:600">待验证</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--surface-2);border-radius:8px">
+          <div style="width:6px;height:6px;border-radius:50%;background:var(--green)"></div>
+          <span style="font-size:12px;color:var(--text-3);font-family:var(--mono);width:120px">06-19 22:15</span>
+          <span style="font-size:12px;flex:1">突破 71,200 阻力位，追多信号</span>
+          <span style="padding:2px 8px;background:var(--green-soft);color:var(--green-text);border-radius:4px;font-size:10px;font-weight:600">已验证 +1.8%</span>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="page-chat" class="page">
+    <div style="display:grid;grid-template-columns:1fr 280px;gap:12px;height:calc(100vh - 96px)">
+      <!-- Chat main -->
+      <div class="card" style="display:flex;flex-direction:column;overflow:hidden">
+        <div class="card-head" style="flex-shrink:0">
+          <div class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:18px;height:18px"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>策略对话</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:11px;color:var(--text-3)">模型: Claude 3.5 Sonnet</span>
+            <button class="card-action">清空对话</button>
+          </div>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px" id="chatMessages">
+          <!-- System message -->
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#6c5ce7,#a29bfe);display:grid;place-items:center;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:16px;height:16px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg></div>
+            <div style="flex:1;background:var(--purple-soft);border-radius:0 12px 12px 12px;padding:12px 14px;font-size:12.5px;color:var(--text);line-height:1.7">
+              <div style="font-weight:600;margin-bottom:4px;color:var(--purple-dark)">策略 Agent</div>
+              你好！我是清算反向策略 Agent。我可以帮你分析当前市场状况、解读清算地图数据、调整策略参数，或者回答任何关于交易策略的问题。有什么我可以帮助的吗？
+            </div>
+          </div>
+
+          <!-- User message -->
+          <div style="display:flex;gap:10px;align-items:flex-start;flex-direction:row-reverse">
+            <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#e17055,#fab1a0);display:grid;place-items:center;flex-shrink:0;color:#fff;font-size:12px;font-weight:700">U</div>
+            <div style="flex:1;max-width:70%;background:var(--surface-2);border-radius:12px 0 12px 12px;padding:12px 14px;font-size:12.5px;color:var(--text);line-height:1.7;margin-left:auto">
+              当前 BTC 的清算地图有什么值得关注的信号吗？
+            </div>
+          </div>
+
+          <!-- Agent response -->
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#6c5ce7,#a29bfe);display:grid;place-items:center;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:16px;height:16px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg></div>
+            <div style="flex:1;background:var(--purple-soft);border-radius:0 12px 12px 12px;padding:12px 14px;font-size:12.5px;color:var(--text);line-height:1.7">
+              <div style="font-weight:600;margin-bottom:4px;color:var(--purple-dark)">策略 Agent</div>
+              <p style="margin-bottom:8px">根据最新的清算地图数据，我发现以下关键信号：</p>
+              <p style="margin-bottom:6px"><strong>1. 上方强阻力区 (73,800 - 74,600)</strong></p>
+              <p style="margin-bottom:8px;padding-left:12px;color:var(--text-2)">该区域存在约 18.6M USDT 的空头清算带，属于"极强"级别。如果价格突破此区域，可能触发空头连锁清算，推动价格快速上涨。</p>
+              <p style="margin-bottom:6px"><strong>2. 当前价格附近 (68,200 - 68,800)</strong></p>
+              <p style="margin-bottom:8px;padding-left:12px;color:var(--text-2)">多空分水岭区域，清算强度极强。这是我们策略的核心关注区域 — 价格在此区间的反应将决定短期方向。</p>
+              <p style="margin-bottom:6px"><strong>3. 策略建议</strong></p>
+              <p style="padding-left:12px;color:var(--text-2)">当前适合在 68,200 附近寻找做多机会（清算反向逻辑），止损 67,500，目标 71,200。盈亏比 2.1:1。</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input area -->
+        <div style="flex-shrink:0;padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end">
+          <div style="flex:1;position:relative">
+            <textarea id="chatInput" placeholder="输入你的问题..." style="width:100%;min-height:40px;max-height:120px;padding:10px 14px;border:1px solid var(--border);border-radius:10px;resize:none;font-size:13px;line-height:1.5;background:var(--surface-2)" rows="1"></textarea>
+          </div>
+          <button id="btnChatSend" style="width:40px;height:40px;border-radius:10px;border:none;background:var(--purple);color:#fff;cursor:pointer;display:grid;place-items:center;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+        </div>
+      </div>
+
+      <!-- Right sidebar: context -->
+      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto">
+        <div class="card">
+          <div class="card-head"><div class="card-title" style="font-size:12px">快捷指令</div></div>
+          <div style="display:grid;gap:6px">
+            <button style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);font-size:11.5px;text-align:left;cursor:pointer;color:var(--text-2)">📊 分析当前清算地图</button>
+            <button style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);font-size:11.5px;text-align:left;cursor:pointer;color:var(--text-2)">🎯 给出交易建议</button>
+            <button style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);font-size:11.5px;text-align:left;cursor:pointer;color:var(--text-2)">⚙️ 优化策略参数</button>
+            <button style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);font-size:11.5px;text-align:left;cursor:pointer;color:var(--text-2)">📈 回顾今日交易</button>
+            <button style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);font-size:11.5px;text-align:left;cursor:pointer;color:var(--text-2)">⚠️ 评估当前风险</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title" style="font-size:12px">对话上下文</div></div>
+          <div style="display:grid;gap:6px;font-size:11px">
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">当前币对</span><span style="font-family:var(--mono);font-weight:600">BTC/USDT</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">策略状态</span><span style="color:var(--green);font-weight:600">运行中</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">持仓</span><span style="font-family:var(--mono);font-weight:600">无</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">今日盈亏</span><span style="font-family:var(--mono);font-weight:600;color:var(--green)">+$142</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title" style="font-size:12px">对话统计</div></div>
+          <div style="display:grid;gap:6px;font-size:11px">
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">本次对话</span><span style="font-family:var(--mono)">3 轮</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">Token 消耗</span><span style="font-family:var(--mono)">1,247</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">API 费用</span><span style="font-family:var(--mono)">$0.018</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="page-evolution" class="page">
+    <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">自进化系统</h1><p style="color:var(--text-2);font-size:13px">策略自动优化、参数进化与性能追踪</p></div>
+
+    <!-- 4 KPI -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">进化代数</div><div class="kpi-value">47<span class="unit">代</span></div><div class="kpi-sub">最近进化 2h 前</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">累计提升</div><div class="kpi-value" style="color:var(--green)">+34.2<span class="unit">%</span></div><div class="kpi-sub">相比初始策略</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--blue-soft);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">胜率变化</div><div class="kpi-value">64.2<span class="unit">%</span></div><div class="kpi-sub pos">+8.7% vs 初始</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--amber-soft);color:var(--amber)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">下次进化</div><div class="kpi-value" style="font-size:16px">1h 42m</div><div class="kpi-sub">自动模式</div></div>
+      </div>
+    </div>
+
+    <!-- Evolution chart + parameter history -->
+    <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">进化曲线</div><div class="hm-tabs"><button class="active">收益率</button><button>胜率</button><button>夏普</button></div></div>
+        <div id="evoChart" style="height:260px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">参数进化历史</div></div>
+        <div style="display:grid;gap:8px;max-height:260px;overflow-y:auto">
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--green)">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:11px;font-weight:600">第 47 代</span><span style="font-size:10px;color:var(--text-3)">2h 前</span></div>
+            <div style="font-size:11px;color:var(--text-2)">止盈 2.5% → 2.8%，清算阈值 83% → 85%</div>
+            <div style="font-size:10.5px;color:var(--green);margin-top:4px">收益 +1.2% | 夏普 1.86 → 1.92</div>
+          </div>
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--green)">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:11px;font-weight:600">第 46 代</span><span style="font-size:10px;color:var(--text-3)">6h 前</span></div>
+            <div style="font-size:11px;color:var(--text-2)">杠杆 3x → 5x，仓位 8% → 5%</div>
+            <div style="font-size:10.5px;color:var(--green);margin-top:4px">收益 +0.8% | 回撤 -0.3%</div>
+          </div>
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--red)">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:11px;font-weight:600">第 45 代</span><span style="font-size:10px;color:var(--text-3)">12h 前</span></div>
+            <div style="font-size:11px;color:var(--text-2)">止损 1.5% → 1.0%（回退）</div>
+            <div style="font-size:10.5px;color:var(--red);margin-top:4px">收益 -0.4% | 已回退到第 44 代参数</div>
+          </div>
+          <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--green)">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:11px;font-weight:600">第 44 代</span><span style="font-size:10px;color:var(--text-3)">1d 前</span></div>
+            <div style="font-size:11px;color:var(--text-2)">价格偏离 2.0% → 1.5%，过滤条件新增 ATR</div>
+            <div style="font-size:10.5px;color:var(--green);margin-top:4px">收益 +2.1% | 胜率 62% → 64%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom: fitness + config -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">适应度评分</div></div>
+        <div id="evoFitnessChart" style="height:160px"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;font-size:11px">
+          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">收益权重</span><span style="font-weight:600">40%</span></div>
+          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">风控权重</span><span style="font-weight:600">30%</span></div>
+          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">胜率权重</span><span style="font-weight:600">20%</span></div>
+          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">稳定性</span><span style="font-weight:600">10%</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">进化配置</div></div>
+        <div style="display:grid;gap:10px">
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span style="color:var(--text-2)">进化间隔</span><span style="font-family:var(--mono);font-weight:600">4 小时</span></div>
+            <input type="range" min="1" max="24" value="4" style="width:100%;accent-color:var(--purple)">
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span style="color:var(--text-2)">变异幅度</span><span style="font-family:var(--mono);font-weight:600">15%</span></div>
+            <input type="range" min="5" max="50" value="15" style="width:100%;accent-color:var(--purple)">
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span style="color:var(--text-2)">回退阈值</span><span style="font-family:var(--mono);font-weight:600;color:var(--red)">-2%</span></div>
+            <input type="range" min="1" max="10" value="2" style="width:100%;accent-color:var(--red)">
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">自动进化模式</label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">失败自动回退</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">进化日志</div></div>
+        <div style="display:grid;gap:6px;font-size:11px;max-height:220px;overflow-y:auto">
+          <div style="padding:6px 8px;background:var(--green-soft);border-radius:5px;color:var(--green-text)">✓ 第47代通过验证，已应用</div>
+          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;color:var(--text-2)">→ 回测中：止盈 2.8%，30天收益 +19.2%</div>
+          <div style="padding:6px 8px;background:var(--red-soft);border-radius:5px;color:var(--red)">✗ 第45代回测失败，触发回退</div>
+          <div style="padding:6px 8px;background:var(--green-soft);border-radius:5px;color:var(--green-text)">✓ 第44代通过验证，已应用</div>
+          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;color:var(--text-2)">→ 变异生成：偏离度 1.5%，ATR 过滤</div>
+          <div style="padding:6px 8px;background:var(--green-soft);border-radius:5px;color:var(--green-text)">✓ 第43代通过验证，已应用</div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="page-xtrend" class="page">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">
+      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">X 热度</h1><p style="color:var(--text-2);font-size:13px">Twitter/X 加密货币情绪分析 · 讨论热度 · 热门推文</p></div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-size:12px;color:var(--text-3)">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span>最后更新: <span id="xLastUpdate">—</span></span>
+          <button class="card-action" id="btnXRefresh" title="使用缓存数据">↻ 刷新</button>
+          <button class="card-action" id="btnXForceRefresh" title="强制调用 X API — 消耗配额" style="color:var(--amber-text)">⚡ 强制刷新</button>
+        </div>
+        <div id="xCacheMeta" style="font-size:10.5px;color:var(--text-3)">无缓存数据 — 点击「强制刷新」获取</div>
+      </div>
+    </div>
+
+    <!-- Top KPI row -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 2h3l-7.5 8.57L22 22h-6.63l-5.2-6.79L4.2 22H1.2l8.03-9.17L1 2h6.8l4.7 6.21z"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">情绪总分</div><div class="kpi-value" id="xKpiScore">—</div><div class="kpi-sub" id="xKpiLabel">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17l5-5 5 5M7 12l5-5 5 5"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">正面推文</div><div class="kpi-value" id="xKpiPos" style="color:var(--green)">—</div><div class="kpi-sub" id="xKpiPosPct">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 7l5 5 5-5M7 12l5 5 5-5"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">负面推文</div><div class="kpi-value" id="xKpiNeg" style="color:var(--red)">—</div><div class="kpi-sub" id="xKpiNegPct">—</div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background:var(--blue-soft);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+        <div class="kpi-body"><div class="kpi-label">分析推文</div><div class="kpi-value" id="xKpiTotal">—</div><div class="kpi-sub">最近 1 小时</div></div>
+      </div>
+    </div>
+
+    <!-- Sentiment gauge + AI analysis -->
+    <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:12px;margin-bottom:16px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">情绪仪表</div></div>
+        <div id="xSentimentGauge" style="height:220px"></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px">
+          <div style="padding:8px;background:var(--green-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">正面</div><div id="xBarPos" style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--green)">—</div></div>
+          <div style="padding:8px;background:var(--surface-2);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">中性</div><div id="xBarNeu" style="font-size:14px;font-weight:700;font-family:var(--mono)">—</div></div>
+          <div style="padding:8px;background:var(--red-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">负面</div><div id="xBarNeg" style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red)">—</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="border-left:3px solid var(--purple)">
+        <div class="card-head">
+          <div class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:16px;height:16px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg>AI 深度分析</div>
+          <button class="card-action" id="btnXAnalyze">↻ 重新分析</button>
+        </div>
+        <div id="xAnalysis" style="font-size:12.5px;color:var(--text-2);line-height:1.8;min-height:180px;white-space:pre-wrap">点击「重新分析」基于当前 X 数据生成 AI 解读</div>
+      </div>
+    </div>
+
+    <!-- Trending coins + Top tweets -->
+    <div style="display:grid;grid-template-columns:1fr 1.3fr;gap:12px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">讨论热度 Top</div><span style="font-size:11px;color:var(--text-3)">按提及量排序</span></div>
+        <div id="xTrendingList" style="display:grid;gap:6px;max-height:440px;overflow-y:auto">
+          <div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px">暂无数据</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">热门推文</div><span style="font-size:11px;color:var(--text-3)">按互动量排序</span></div>
+        <div id="xTweetsList" style="display:grid;gap:10px;max-height:440px;overflow-y:auto">
+          <div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px">暂无数据</div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="page-grok" class="page">
+    <div style="display:grid;grid-template-columns:1fr 340px;gap:12px;height:calc(100vh - 96px)">
+      <!-- Main: chat + report -->
+      <div class="card" style="display:flex;flex-direction:column;overflow:hidden">
+        <div class="card-head" style="flex-shrink:0">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><circle cx="9" cy="10" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/><path d="M8 15s1.5 2 4 2 4-2 4-2"/></svg>
+            Grok 加密分析师
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:11px;color:var(--text-3)" id="grokModelPill">—</span>
+            <button class="card-action" id="btnGrokReset">↻ 清空对话</button>
+          </div>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px" id="grokMessages">
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#6c5ce7,#a29bfe);display:grid;place-items:center;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><circle cx="9" cy="10" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/><path d="M8 15s1.5 2 4 2 4-2 4-2"/></svg></div>
+            <div style="flex:1;background:var(--purple-soft);border-radius:0 12px 12px 12px;padding:12px 14px;font-size:12.5px;line-height:1.7">
+              <div style="font-weight:600;margin-bottom:4px;color:var(--purple-dark)">Grok 分析师</div>
+              你好，我是专门分析 X (Twitter) 加密货币情报的 AI 分析师。我可以：<br>
+              · 实时搜索 X 讨论（需触发词：当前/今天/$BTC 等）<br>
+              · 生成结构化报告（说"给我一份简报"）<br>
+              · 起草候选推文（说"帮我写条关于 XX 的推文"）<br>
+              · 深度分析 KOL 观点、情绪转折、热度趋势<br>
+              有什么想了解的？
+            </div>
+          </div>
+        </div>
+
+        <!-- Input area -->
+        <div style="flex-shrink:0;padding:10px 16px;border-top:1px solid var(--border)">
+          <div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+            <button class="grok-quick" data-prompt="现在加密货币 X 上的整体情绪如何？生成一份日度简报（JSON格式）">📊 日度简报</button>
+            <button class="grok-quick" data-prompt="现在 $BTC 在 X 上讨论什么？有什么关键信号？">🔍 BTC 情报</button>
+            <button class="grok-quick" data-prompt="最近有什么加密 KOL 发了有影响力的推文？">👑 KOL 观点</button>
+            <button class="grok-quick" data-prompt="帮我写 3 条关于当前 BTC 清算地图分析的推文候选">✍️ 起草推文</button>
+            <button class="grok-quick" data-prompt="哪些币种 mention 在上涨？生成热度排行">🔥 热度排行</button>
+          </div>
+          <div style="display:flex;gap:10px;align-items:flex-end">
+            <div style="flex:1;position:relative">
+              <textarea id="grokInput" placeholder="提问或要求生成报告... (Shift+Enter 换行)" style="width:100%;min-height:40px;max-height:120px;padding:10px 14px;border:1px solid var(--border);border-radius:10px;resize:none;font-size:13px;line-height:1.5;background:var(--surface-2)" rows="1"></textarea>
+            </div>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--text-3);cursor:pointer;white-space:nowrap" title="强制调用 X Live Search">
+              <input type="checkbox" id="grokForceLive" style="accent-color:var(--purple)">🔴 实时
+            </label>
+            <button id="btnGrokSend" style="width:40px;height:40px;border-radius:10px;border:none;background:var(--purple);color:#fff;cursor:pointer;display:grid;place-items:center;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+          </div>
+          <div style="font-size:10.5px;color:var(--text-3);margin-top:4px" id="grokCostMeta">累计 0 次调用 · $0.000</div>
+        </div>
+      </div>
+
+      <!-- Right sidebar: structured report viewer + tweet composer -->
+      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto">
+        <!-- Structured report card -->
+        <div class="card" id="grokReportCard" style="display:none">
+          <div class="card-head"><div class="card-title" style="font-size:12.5px">📋 结构化报告</div><button class="card-action" id="btnGrokExport" style="font-size:10.5px">导出 JSON</button></div>
+          <div id="grokReportBody" style="font-size:11.5px;max-height:420px;overflow-y:auto"></div>
+        </div>
+
+        <!-- Tweet drafts card -->
+        <div class="card" id="grokDraftsCard" style="display:none">
+          <div class="card-head"><div class="card-title" style="font-size:12.5px">✍️ 推文候选</div><span style="font-size:10.5px;color:var(--text-3)" id="grokDraftsMeta">—</span></div>
+          <div id="grokDraftsBody" style="display:grid;gap:8px;max-height:420px;overflow-y:auto"></div>
+        </div>
+
+        <!-- Agent config card -->
+        <div class="card">
+          <div class="card-head"><div class="card-title" style="font-size:12.5px">⚙️ Agent 配置</div></div>
+          <div style="display:grid;gap:6px;font-size:11px">
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">System Prompt</span><span id="grokSysPromptChars" style="font-family:var(--mono);font-weight:600">— chars</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">模型</span><span id="grokModelMeta" style="font-family:var(--mono);font-weight:600">—</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">会话数</span><span id="grokSessionCount" style="font-family:var(--mono);font-weight:600">0</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">累计调用</span><span id="grokTotalCalls" style="font-family:var(--mono);font-weight:600">0</span></div>
+            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">累计费用</span><span id="grokTotalCost" style="font-family:var(--mono);font-weight:600;color:var(--amber)">$0.0000</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <!-- ===== LOGS ===== -->
+  <section id="page-logs" class="page">
+    <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">系统日志</h1><p style="color:var(--text-2);font-size:13px">实时事件流 + AI 检修</p></div>
+      <div style="display:flex;gap:8px">
+        <button id="btnLogsRefresh" style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:12px;cursor:pointer">刷新</button>
+        <button id="btnLogsDiagnose" style="padding:8px 14px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:12px;font-weight:600;cursor:pointer">AI 检修</button>
+      </div>
+    </div>
+
+    <!-- AI Diagnosis result -->
+    <div id="logsDiagnosisCard" class="card" style="margin-bottom:12px;display:none;border-left:3px solid var(--purple)">
+      <div class="card-head"><div class="card-title">AI 诊断结果</div><button class="card-action" onclick="document.getElementById('logsDiagnosisCard').style.display='none'">关闭</button></div>
+      <div id="logsDiagnosisBody" style="font-size:12.5px;line-height:1.8;white-space:pre-wrap"></div>
+    </div>
+
+    <!-- Log entries -->
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">事件日志</div>
+        <div style="display:flex;gap:6px">
+          <select id="logsFilter" class="hdr-select" style="width:100px;height:28px;font-size:11px">
+            <option value="">全部</option>
+            <option value="error">错误</option>
+            <option value="signal">信号</option>
+            <option value="order">订单</option>
+            <option value="risk">风控</option>
+            <option value="phase">阶段</option>
+            <option value="heatmap">热力图</option>
+          </select>
+          <span id="logsCount" style="font-size:11px;color:var(--text-3);display:flex;align-items:center">0 条</span>
+        </div>
+      </div>
+      <div id="logsBody" style="max-height:600px;overflow-y:auto;font-size:12px;font-family:var(--mono)"></div>
+    </div>
+  </section>
+
+  <!-- ===== TWEET PIPELINE ===== -->
+  <section id="page-pipeline" class="page">
+    <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">推文流水线</h1><p style="color:var(--text-2);font-size:13px">一键生成 → 审核 → 发布</p></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="pipelineStatus" style="font-size:11px;color:var(--text-3)">就绪</span>
+        <button id="btnPipelineGenerate" style="padding:10px 20px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          生成推文
+        </button>
+      </div>
+    </div>
+
+    <!-- LLM Provider selector -->
+    <div class="card" style="margin-bottom:12px;padding:12px 16px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--text-2);font-weight:500;white-space:nowrap">LLM 模型</label>
+        <select id="pipelineProvider" class="hdr-select" style="width:140px">
+          {% for p in providers %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+        </select>
+        <input id="pipelineApiKey" type="password" placeholder="API Key" style="flex:1;min-width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
+        <input id="pipelineModel" type="text" placeholder="模型 (留空用默认)" style="width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
+        <input id="pipelineBaseUrl" type="text" placeholder="自定义 Base URL (中转)" style="width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
+      </div>
+      <div style="margin-top:6px;font-size:10.5px;color:var(--text-3)">支持所有 OpenAI 兼容 API，包括 OpenRouter、302.ai、SiliconFlow 等中转服务。填写 Base URL 即可。</div>
+    </div>
+
+    <!-- Context summary -->
+    <div id="pipelineContext" class="card" style="margin-bottom:12px;display:none">
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+        <span style="padding:3px 8px;background:var(--purple-soft);color:var(--purple-dark);border-radius:4px;font-weight:600;font-size:10px">数据摘要</span>
+        <span id="pipelineContextText" style="color:var(--text-2)">—</span>
+        <span class="spacer"></span>
+        <span id="pipelineCost" style="font-family:var(--mono);font-size:10.5px;color:var(--text-3)">—</span>
+      </div>
+    </div>
+
+    <!-- Candidates grid -->
+    <div id="pipelineCandidates" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px"></div>
+
+    <!-- Empty state -->
+    <div id="pipelineEmpty" class="card" style="text-align:center;padding:60px 20px">
+      <div style="width:56px;height:56px;margin:0 auto 16px;background:var(--purple-soft);border-radius:14px;display:grid;place-items:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:28px;height:28px"><path d="M12 19V5M5 12l7-7 7 7"/><path d="M3 21h18"/></svg>
+      </div>
+      <div style="font-size:15px;font-weight:600;margin-bottom:6px">点击「生成推文」开始</div>
+      <div style="font-size:12.5px;color:var(--text-2);max-width:320px;margin:0 auto">系统将综合当前市场数据、策略信号和 X 社区情绪，自动生成 3 条不同风格的候选推文供你审核</div>
+    </div>
+
+    <!-- History -->
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><div class="card-title">发布历史</div><button class="card-action" id="btnPipelineRefreshHistory">刷新</button></div>
+      <div id="pipelineHistory" style="font-size:12px;color:var(--text-3)">暂无记录</div>
+    </div>
+  </section>
+
+  <section id="page-settings" class="page">
+    <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">设置</h1><p style="color:var(--text-2);font-size:13px">系统配置、API 密钥与偏好设置</p></div>
+
+    <div style="display:grid;grid-template-columns:200px 1fr;gap:16px">
+      <!-- Settings nav -->
+      <div style="display:flex;flex-direction:column;gap:4px" id="settingsNav">
+        <div class="stab-item active" data-stab="api" style="padding:8px 12px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;background:var(--purple-soft);color:var(--purple-dark)">API 配置</div>
+        <div class="stab-item" data-stab="llm" style="padding:8px 12px;border-radius:8px;font-size:13px;cursor:pointer;color:var(--text-2)">LLM 模型</div>
+        <div class="stab-item" data-stab="trading" style="padding:8px 12px;border-radius:8px;font-size:13px;cursor:pointer;color:var(--text-2)">交易设置</div>
+        <div class="stab-item" data-stab="notify" style="padding:8px 12px;border-radius:8px;font-size:13px;cursor:pointer;color:var(--text-2)">通知</div>
+        <div class="stab-item" data-stab="data" style="padding:8px 12px;border-radius:8px;font-size:13px;cursor:pointer;color:var(--text-2)">数据管理</div>
+        <div class="stab-item" data-stab="about" style="padding:8px 12px;border-radius:8px;font-size:13px;cursor:pointer;color:var(--text-2)">关于</div>
+      </div>
+
+      <!-- Settings content -->
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <!-- Automation config -->
+        <div class="card" data-settings-section="api" style="border-left:3px solid var(--purple)">
+          <div class="card-head"><div class="card-title">自动化配置</div><span style="font-size:10.5px;color:var(--text-3)" id="autoCostEstimate">预估费用: —/小时</span></div>
+          <div style="display:grid;gap:10px;font-size:12px">
+            <div style="display:grid;grid-template-columns:1fr 120px 80px;gap:8px;align-items:center;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="autoMarketPoll" checked style="accent-color:var(--purple)"><span>市场数据轮询</span></label>
+              <div style="display:flex;align-items:center;gap:4px"><input id="autoMarketInterval" type="number" value="60" min="10" max="600" style="width:60px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:11px;text-align:center"><span style="font-size:10px;color:var(--text-3)">秒</span></div>
+              <span style="font-size:10px;color:var(--green-text);font-weight:600">交易所 API 免费</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 120px 80px;gap:8px;align-items:center;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="autoSignalGen" checked style="accent-color:var(--purple)"><span>信号生成 + 风控审查</span></label>
+              <div style="font-size:10px;color:var(--text-3)">跟随市场轮询</div>
+              <span style="font-size:10px;color:var(--text-3)">免费</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 120px 80px;gap:8px;align-items:center;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="autoHeatmap" checked style="accent-color:var(--purple)"><span>清算地图定时采集</span></label>
+              <div style="display:flex;align-items:center;gap:4px"><input id="autoHeatmapInterval" type="number" value="600" min="60" max="3600" style="width:60px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:11px;text-align:center"><span style="font-size:10px;color:var(--text-3)">秒</span></div>
+              <span style="font-size:10px;color:var(--text-3)">0.001 USDC/次</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 120px 80px;gap:8px;align-items:center;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="autoLlmReview" style="accent-color:var(--purple)"><span>LLM 交易审查（每次信号触发）</span></label>
+              <div style="font-size:10px;color:var(--text-3)">信号触发时</div>
+              <span style="font-size:10px;color:var(--text-3)">按 token 计费</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 120px 80px;gap:8px;align-items:center;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="autoPaperTrade" checked style="accent-color:var(--purple)"><span>Paper 模拟下单</span></label>
+              <div style="font-size:10px;color:var(--text-3)">信号通过时</div>
+              <span style="font-size:10px;color:var(--text-3)">免费</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 120px 80px;gap:8px;align-items:center;padding:8px 10px;background:var(--surface-2);border-radius:6px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="autoXSentiment" style="accent-color:var(--purple)"><span>X 情绪自动刷新</span></label>
+              <div style="display:flex;align-items:center;gap:4px"><input id="autoXInterval" type="number" value="900" min="300" max="3600" style="width:60px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:11px;text-align:center"><span style="font-size:10px;color:var(--text-3)">秒</span></div>
+              <span style="font-size:10px;color:var(--text-3)">~$0.02/次</span>
+            </div>
+          </div>
+          <div style="margin-top:10px;padding:8px 10px;background:var(--amber-soft);border-radius:6px;font-size:11px;color:var(--amber-text);line-height:1.6" id="autoCostBreakdown">
+            按当前配置预估：市场数据 60次/h × 0.001 = 0.06 USDC/h | 清算地图 6次/h × 0.001 = 0.006 USDC/h | 合计约 0.066 USDC/h
+          </div>
+        </div>
+
+        <!-- API Keys -->
+        <div class="card" data-settings-section="api">
+          <div class="card-head"><div class="card-title">API 密钥配置</div><span style="padding:3px 8px;background:var(--green-soft);color:var(--green-text);border-radius:4px;font-size:10px;font-weight:600">已加密存储</span></div>
+          <div style="display:grid;gap:14px">
+            <div>
+              <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">钱包私钥 (Wallet Private Key) <span style="color:var(--text-3);font-weight:400">— 402 协议，每次调用支付 0.001 USDC (无 gas)</span></label>
+              <div style="display:flex;gap:8px"><input id="pk" type="password" placeholder="0x... (Base 链钱包私钥，用于 402 协议单次支付 0.001 USDC 获取清算数据，无需 gas)" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)"><button style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:11px;cursor:pointer;white-space:nowrap">显示</button></div>
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Binance API Key</label>
+              <input type="password" placeholder="输入 Binance API Key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)">
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Binance Secret Key</label>
+              <input type="password" placeholder="输入 Binance Secret Key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)">
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Grok API <span style="color:var(--text-3);font-weight:400">— X 热度分析 &amp; Grok 对话 (支持官方/中转)</span></label>
+              <div style="display:flex;gap:8px;margin-bottom:6px">
+                <select id="xRelayProvider" class="hdr-select" style="width:130px">
+                  <option value="xai">xAI 官方</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="302ai">302.ai</option>
+                  <option value="custom">自定义中转</option>
+                </select>
+                <input id="xBearerToken" type="password" placeholder="xai-..." style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)">
+                <button id="btnXConnect" style="padding:8px 14px;border:1px solid var(--purple);border-radius:8px;background:var(--purple-soft);color:var(--purple-dark);font-size:12px;cursor:pointer;white-space:nowrap">测试连接</button>
+              </div>
+              <div id="xCustomUrlRow" style="display:none;margin-bottom:6px">
+                <input id="xCustomBaseUrl" type="text" placeholder="自定义 Base URL，如 https://your-relay.com/v1" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)">
+              </div>
+              <div id="xConnStatus" style="font-size:11px;color:var(--text-3);margin-bottom:6px">未连接 · 前往 <a href="https://x.ai/api" target="_blank" style="color:var(--purple)">x.ai/api</a> 获取密钥</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="xModelSelect" class="hdr-select" style="flex:1" disabled>
+                  <option value="">— 请先测试连接 —</option>
+                </select>
+                <button id="btnXApplyModel" style="padding:7px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px;cursor:pointer;white-space:nowrap" disabled>应用</button>
+              </div>
+              <div id="xUsageStats" style="font-size:10.5px;color:var(--text-3);margin-top:6px;font-family:var(--mono)">—</div>
+            </div>
+
+            <!-- X Poster OAuth 1.0a credentials -->
+            <div style="padding:12px;border:1px dashed var(--border);border-radius:8px;background:var(--surface-2)">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <label style="font-size:12px;color:var(--text-2);font-weight:600">X 发推凭证 <span style="color:var(--text-3);font-weight:400">— 用于发布推文 (OAuth 1.0a)</span></label>
+                <span id="xPosterConnStatus" style="font-size:10.5px;color:var(--text-3)">未连接</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">
+                <input id="xPosterApiKey" type="password" placeholder="API Key (Consumer Key)" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)">
+                <input id="xPosterApiSecret" type="password" placeholder="API Secret (Consumer Secret)" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)">
+                <input id="xPosterAccessToken" type="password" placeholder="Access Token" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)">
+                <input id="xPosterAccessSecret" type="password" placeholder="Access Token Secret" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)">
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button id="btnXPosterConnect" style="padding:6px 14px;border:1px solid var(--purple);border-radius:6px;background:var(--purple-soft);color:var(--purple-dark);font-size:11px;cursor:pointer">验证 &amp; 连接</button>
+                <span style="font-size:10.5px;color:var(--text-3)">需在 <a href="https://developer.x.com" target="_blank" style="color:var(--purple)">developer.x.com</a> 开启 Read &amp; Write 权限</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- LLM Config -->
+        <div class="card" data-settings-section="llm">
+          <div class="card-head"><div class="card-title">LLM 模型配置</div></div>
+          <div style="display:grid;gap:14px">
+            <!-- Primary LLM -->
+            <div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)">
+              <label style="font-size:12px;color:var(--text-2);font-weight:600;display:block;margin-bottom:8px">主模型 <span style="color:var(--text-3);font-weight:400">— 数据解读 &amp; 策略对话</span></label>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <select id="llmProvider" class="hdr-select" style="width:130px">
+                  {% for p in providers %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+                </select>
+                <input id="llmKey" type="password" placeholder="API Key" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+                <button id="btnLlmConnect" style="padding:8px 12px;border:1px solid var(--purple);border-radius:6px;background:var(--purple-soft);color:var(--purple-dark);font-size:11px;cursor:pointer;white-space:nowrap">测试连接</button>
+              </div>
+              <div style="display:flex;gap:8px;margin-bottom:6px">
+                <input id="llmBaseUrl" type="text" placeholder="自定义 Base URL (中转，留空用默认)" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)">
+              </div>
+              <div id="llmConnStatus" style="font-size:10.5px;color:var(--text-3);margin-bottom:8px">未连接</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="llmModelSelect" class="hdr-select" style="flex:1" disabled>
+                  <option value="">— 请先测试连接 —</option>
+                </select>
+                <input id="llmContextLength" type="number" placeholder="上下文长度" style="width:120px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)" disabled>
+                <button id="btnLlmApply" style="padding:7px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px;cursor:pointer;white-space:nowrap" disabled>应用</button>
+              </div>
+            </div>
+
+            <!-- Review LLM -->
+            <div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)">
+              <label style="font-size:12px;color:var(--text-2);font-weight:600;display:block;margin-bottom:8px">审核模型 <span style="color:var(--text-3);font-weight:400">— 交易信号二次审查 (可选)</span></label>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <select id="llmReviewProvider" class="hdr-select" style="width:130px">
+                  {% for p in providers %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+                </select>
+                <input id="llmReviewKey" type="password" placeholder="API Key" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+                <button id="btnLlmReviewConnect" style="padding:8px 12px;border:1px solid var(--purple);border-radius:6px;background:var(--purple-soft);color:var(--purple-dark);font-size:11px;cursor:pointer;white-space:nowrap">测试连接</button>
+              </div>
+              <div style="display:flex;gap:8px;margin-bottom:6px">
+                <input id="llmReviewBaseUrl" type="text" placeholder="自定义 Base URL (中转，留空用默认)" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)">
+              </div>
+              <div id="llmReviewConnStatus" style="font-size:10.5px;color:var(--text-3);margin-bottom:8px">未连接</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="llmReviewModelSelect" class="hdr-select" style="flex:1" disabled>
+                  <option value="">— 请先测试连接 —</option>
+                </select>
+                <input id="llmReviewContextLength" type="number" placeholder="上下文长度" style="width:120px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface)" disabled>
+                <button id="btnLlmReviewApply" style="padding:7px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px;cursor:pointer;white-space:nowrap" disabled>应用</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Usage Stats -->
+        <div class="card" data-settings-section="llm">
+          <div class="card-head"><div class="card-title">使用统计</div><button class="card-action" id="btnRefreshUsage">刷新</button></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px" id="usageStatsGrid">
+            <div style="padding:10px;background:var(--surface-2);border-radius:8px">
+              <div style="font-size:10.5px;color:var(--text-3);margin-bottom:3px">Grok (X 情绪 + 对话)</div>
+              <div style="font-size:14px;font-weight:700;font-family:var(--mono)" id="usageXCalls">0 次</div>
+              <div style="font-size:10.5px;color:var(--text-3);font-family:var(--mono)" id="usageXCost">$0.0000</div>
+            </div>
+            <div style="padding:10px;background:var(--surface-2);border-radius:8px">
+              <div style="font-size:10.5px;color:var(--text-3);margin-bottom:3px">LLM (解读 + 审查)</div>
+              <div style="font-size:14px;font-weight:700;font-family:var(--mono)" id="usageLlmCalls">0 次</div>
+              <div style="font-size:10.5px;color:var(--text-3);font-family:var(--mono)" id="usageLlmTokens">—</div>
+            </div>
+            <div style="padding:10px;background:var(--surface-2);border-radius:8px">
+              <div style="font-size:10.5px;color:var(--text-3);margin-bottom:3px">Claw402 (清算数据)</div>
+              <div style="font-size:14px;font-weight:700;font-family:var(--mono)" id="usageClaw402Calls">0 次</div>
+              <div style="font-size:10.5px;color:var(--text-3);font-family:var(--mono)" id="usageClaw402Cost">0.000 USDC</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trading settings -->
+        <div class="card" data-settings-section="trading">
+          <div class="card-head"><div class="card-title">交易设置</div></div>
+          <div style="display:grid;gap:12px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+              <div>
+                <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">默认交易对</label>
+                <select class="hdr-select" style="width:100%"><option>BTC/USDT</option><option>ETH/USDT</option><option>SOL/USDT</option></select>
+              </div>
+              <div>
+                <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">交易所</label>
+                <select class="hdr-select" style="width:100%"><option>Binance</option><option>OKX</option><option>Bybit</option></select>
+              </div>
+              <div>
+                <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">运行模式</label>
+                <select class="hdr-select" style="width:100%"><option>实盘</option><option>模拟盘</option><option>仅信号</option></select>
+              </div>
+            </div>
+            <div style="display:grid;gap:6px">
+              <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">启用自动交易</label>
+              <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">启用风控审核（LLM 二次确认）</label>
+              <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" style="accent-color:var(--purple)">启用开机自启</label>
+              <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">订单通知（桌面弹窗）</label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Data management -->
+        <div class="card" data-settings-section="data">
+          <div class="card-head"><div class="card-title">数据管理</div><button class="card-action" id="btnRefreshDataStats">刷新</button></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+            <div style="padding:12px;background:var(--surface-2);border-radius:8px;text-align:center">
+              <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">订单记录</div>
+              <div style="font-size:16px;font-weight:700;font-family:var(--mono)" id="dataOrdersCount">—</div>
+              <div style="font-size:10.5px;color:var(--text-3)" id="dataOrdersSize">—</div>
+            </div>
+            <div style="padding:12px;background:var(--surface-2);border-radius:8px;text-align:center">
+              <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">清算地图快照</div>
+              <div style="font-size:16px;font-weight:700;font-family:var(--mono)" id="dataHeatmapCount">—</div>
+              <div style="font-size:10.5px;color:var(--text-3)" id="dataHeatmapSize">—</div>
+            </div>
+            <div style="padding:12px;background:var(--surface-2);border-radius:8px;text-align:center">
+              <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">事件日志</div>
+              <div style="font-size:16px;font-weight:700;font-family:var(--mono)" id="dataEventsCount">—</div>
+              <div style="font-size:10.5px;color:var(--text-3)" id="dataEventsSize">—</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:12px">
+            <button style="padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:12px;cursor:pointer">导出数据</button>
+            <button style="padding:6px 14px;border:1px solid var(--red);border-radius:6px;background:var(--red-soft);font-size:12px;color:var(--red);cursor:pointer">清空历史</button>
+          </div>
+        </div>
+
+        <!-- Notifications -->
+        <div class="card" data-settings-section="notify">
+          <div class="card-head"><div class="card-title">通知设置</div></div>
+          <div style="display:grid;gap:8px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">订单成交通知（桌面弹窗）</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">信号触发通知</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" style="accent-color:var(--purple)">连续亏损暂停通知</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" style="accent-color:var(--purple)">API 预算耗尽通知</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" style="accent-color:var(--purple)">热力图快照过期通知</label>
+          </div>
+        </div>
+
+        <!-- About -->
+        <div class="card" data-settings-section="about">
+          <div class="card-head"><div class="card-title">关于</div></div>
+          <div style="display:grid;gap:10px;font-size:12.5px;color:var(--text-2)">
+            <div style="display:flex;justify-content:space-between"><span>应用名称</span><span style="font-weight:600;color:var(--text)">Liquidation Contrarian Agent</span></div>
+            <div style="display:flex;justify-content:space-between"><span>版本</span><span style="font-family:var(--mono)">0.1.0</span></div>
+            <div style="display:flex;justify-content:space-between"><span>策略</span><span>清算反向短线交易</span></div>
+            <div style="display:flex;justify-content:space-between"><span>数据源</span><span>CoinAnk (Claw402 协议)</span></div>
+            <div style="display:flex;justify-content:space-between"><span>AI 模型</span><span>多 LLM 支持 (18 providers)</span></div>
+            <div style="display:flex;justify-content:space-between"><span>X 集成</span><span>Grok Live Search + OAuth 发推</span></div>
+            <div style="padding:10px;background:var(--surface-2);border-radius:8px;margin-top:6px;font-size:11.5px;line-height:1.7;color:var(--text-3)">
+              本工具仅供研究和学习使用，不构成投资建议。加密货币交易具有高风险，请确保充分了解风险后再使用自动化策略。所有交易决策最终由用户负责。
+            </div>
+          </div>
+        </div>
+
+        <!-- Save button -->
+        <div style="display:flex;justify-content:flex-end;gap:10px">
+          <button style="padding:8px 20px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:13px;cursor:pointer">重置</button>
+          <button style="padding:8px 20px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:13px;font-weight:600;cursor:pointer" id="btnSaveSettings">保存设置</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="/js/echarts.min.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
