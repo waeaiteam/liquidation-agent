@@ -181,7 +181,7 @@ async function loadDesktopKeys() {
     if (keys?.llm_key && $('llmKey')) $('llmKey').value = keys.llm_key;
     if (keys?.llm_review_key && $('llmReviewKey')) $('llmReviewKey').value = keys.llm_review_key;
     state.exchangeCredentials = normalizeExchangeCredentials(keys);
-    if ($('exchangeCredExchange')) $('exchangeCredExchange').value = normalizeExchange(keys?.exchange || keys?.llm_default_exchange || state.lastStatus?.config?.exchange || 'binance');
+    syncExchangeSelectors(keys?.exchange || keys?.exchange_default || state.lastStatus?.config?.exchange || 'binance');
     renderExchangeCredentialFields();
     if (keys?.llm_default_provider && $('llmProvider')) $('llmProvider').value = keys.llm_default_provider;
     if (keys?.llm_review_provider && $('llmReviewProvider')) $('llmReviewProvider').value = keys.llm_review_provider;
@@ -230,7 +230,7 @@ function renderHeader(s) {
   if (startBtn) startBtn.style.display = running ? 'none' : '';
   if (stopBtn) stopBtn.style.display = running ? '' : 'none';
   if (cfg.symbol && $('hdrSymbol')) $('hdrSymbol').value = cfg.symbol.replace('USDT', '/USDT');
-  if (cfg.exchange && $('hdrExchange')) $('hdrExchange').value = normalizeExchange(cfg.exchange);
+  if (cfg.exchange) syncExchangeSelectors(cfg.exchange, { includeCredential: false });
   if (cfg.interval && $('hdrInterval')) $('hdrInterval').value = String(cfg.interval).replace('h', 'H').replace('d', 'D').replace('w', 'W');
   if (cfg.symbol && $('configSymbol')) $('configSymbol').value = cfg.symbol.replace('USDT', '/USDT');
   if (cfg.exchange && $('configExchange')) $('configExchange').value = normalizeExchange(cfg.exchange);
@@ -248,6 +248,36 @@ function selectedHeaderExchange() {
 function selectedHeaderInterval() {
   const raw = $('hdrInterval')?.value || state.lastStatus?.config?.interval || '1m';
   return String(raw).trim().replace(/H$/, 'h').replace(/D$/, 'd').replace(/W$/, 'w');
+}
+
+function syncExchangeSelectors(value, { includeCredential = true } = {}) {
+  const exchange = normalizeExchange(value);
+  if ($('hdrExchange')) $('hdrExchange').value = exchange;
+  if ($('configExchange')) $('configExchange').value = exchange;
+  if ($('hmExch')) $('hmExch').value = exchange;
+  if (includeCredential && $('exchangeCredExchange')) $('exchangeCredExchange').value = exchange;
+  return exchange;
+}
+
+async function persistAgentExchange(exchange) {
+  const selected = syncExchangeSelectors(exchange);
+  try {
+    const symbol = selectedHeaderSymbol();
+    const result = await api('POST', '/api/agent/config', {
+      coin: symbol.replace(/USDT$/, ''),
+      symbol,
+      exchange: selected,
+      interval: selectedHeaderInterval(),
+    });
+    if (result?.config) {
+      state.lastStatus = { ...(state.lastStatus || {}), config: result.config };
+      renderDashKpis(state.lastStatus);
+    }
+    return result;
+  } catch (e) {
+    toast('交易所配置保存失败: ' + (e.message || e), 'err');
+    return null;
+  }
 }
 
 function selectedHeatmapSymbol() {
@@ -2041,9 +2071,21 @@ async function bootstrap() {
       this.classList.add('active');
     });
   });
-  $('exchangeCredExchange')?.addEventListener('change', function () {
-    persistVisibleExchangeCredentials(this.dataset.currentExchange);
+  $('hdrExchange')?.addEventListener('change', async function () {
+    const exchange = syncExchangeSelectors(this.value);
     renderExchangeCredentialFields();
+    await persistAgentExchange(exchange);
+  });
+  $('configExchange')?.addEventListener('change', async function () {
+    const exchange = syncExchangeSelectors(this.value);
+    renderExchangeCredentialFields();
+    await persistAgentExchange(exchange);
+  });
+  $('exchangeCredExchange')?.addEventListener('change', async function () {
+    persistVisibleExchangeCredentials(this.dataset.currentExchange);
+    const exchange = syncExchangeSelectors(this.value);
+    renderExchangeCredentialFields();
+    await persistAgentExchange(exchange);
   });
 }
 
@@ -2065,7 +2107,8 @@ async function saveSettings() {
   const binanceKey = exchangeCredentials.binance.api_key || '';
   const binanceSecret = exchangeCredentials.binance.secret || '';
   const selectedSymbol = (($('configSymbol')?.value || $('hdrSymbol')?.value || 'BTC/USDT').replace('/', '')).toUpperCase();
-  const selectedExchange = normalizeExchange($('configExchange')?.value || $('hdrExchange')?.value || 'binance');
+  const selectedExchange = normalizeExchange($('exchangeCredExchange')?.value || $('configExchange')?.value || $('hdrExchange')?.value || 'binance');
+  syncExchangeSelectors(selectedExchange);
 
   // Build config payload for strategy config endpoint
   const config = {};
@@ -2106,6 +2149,9 @@ async function saveSettings() {
     state.llmKey = llmKey;
     checkKeys();
     toast('设置已保存', 'ok');
+    try {
+      await refreshAgentData();
+    } catch {}
   } catch (e) {
     toast('保存失败: ' + e.message, 'err');
   }
