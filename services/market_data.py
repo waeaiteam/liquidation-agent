@@ -154,7 +154,11 @@ class BinanceMarketDataService:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
             message = f"{label} HTTP {exc.code}: {detail}"
             if exc.code in {451, 403} and ("restricted" in detail.lower() or label in {"Binance", "Bybit"}):
-                raise MarketDataRestrictedError(message) from exc
+                raise MarketDataRestrictedError(
+                    f"{label} access is restricted from the current network location. "
+                    f"If the user's own network can access {label}, the same API format will work there. "
+                    f"HTTP {exc.code}: {detail}"
+                ) from exc
             raise MarketDataError(message) from exc
         except URLError as exc:
             raise MarketDataError(f"{label} request failed: {exc.reason}") from exc

@@ -143,7 +143,12 @@ async function api(method, path, body) {
   });
   const text = await res.text();
   let j; try { j = text ? JSON.parse(text) : {}; } catch { j = { raw: text }; }
-  if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(j.error || `HTTP ${res.status}`);
+    err.code = j.code || '';
+    err.status = res.status;
+    throw err;
+  }
   return j;
 }
 
@@ -212,6 +217,7 @@ function updateChatModelPill() {
 // ============== HEADER ==============
 function renderHeader(s) {
   const running = !!s?.running;
+  const cfg = s?.config || {};
   const pill = $('hdrRun');
   if (pill) {
     if (running) { pill.className = 'hdr-pill pill-purple'; $('hdrRunText').textContent = '运行中'; }
@@ -221,6 +227,11 @@ function renderHeader(s) {
   const stopBtn = $('btnStop');
   if (startBtn) startBtn.style.display = running ? 'none' : '';
   if (stopBtn) stopBtn.style.display = running ? '' : 'none';
+  if (cfg.symbol && $('hdrSymbol')) $('hdrSymbol').value = cfg.symbol.replace('USDT', '/USDT');
+  if (cfg.exchange && $('hdrExchange')) $('hdrExchange').value = normalizeExchange(cfg.exchange);
+  if (cfg.interval && $('hdrInterval')) $('hdrInterval').value = String(cfg.interval).replace('h', 'H').replace('d', 'D').replace('w', 'W');
+  if (cfg.symbol && $('configSymbol')) $('configSymbol').value = cfg.symbol.replace('USDT', '/USDT');
+  if (cfg.exchange && $('configExchange')) $('configExchange').value = normalizeExchange(cfg.exchange);
 }
 
 function selectedHeaderSymbol() {
@@ -229,12 +240,46 @@ function selectedHeaderSymbol() {
 
 function selectedHeaderExchange() {
   const raw = $('hdrExchange')?.value || state.lastStatus?.config?.exchange || 'binance';
-  return String(raw).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return normalizeExchange(raw);
 }
 
 function selectedHeaderInterval() {
   const raw = $('hdrInterval')?.value || state.lastStatus?.config?.interval || '1m';
   return String(raw).trim().replace(/H$/, 'h').replace(/D$/, 'd').replace(/W$/, 'w');
+}
+
+function selectedHeatmapSymbol() {
+  return (($('hmSym')?.value || selectedHeaderSymbol()).replace('/', '')).toUpperCase();
+}
+
+function selectedHeatmapExchange() {
+  return normalizeExchange($('hmExch')?.value || selectedHeaderExchange());
+}
+
+function selectedHeatmapInterval() {
+  const raw = $('hmInt')?.value || selectedHeaderInterval();
+  return String(raw).trim().replace(/H$/, 'h').replace(/D$/, 'd').replace(/W$/, 'w');
+}
+
+function normalizeExchange(value) {
+  const raw = String(value || 'binance').toLowerCase();
+  if (raw.includes('okx')) return 'okx';
+  if (raw.includes('bybit')) return 'bybit';
+  return 'binance';
+}
+
+function exchangeLabel(value) {
+  const exchange = normalizeExchange(value);
+  if (exchange === 'okx') return 'OKX';
+  if (exchange === 'bybit') return 'Bybit';
+  return 'Binance';
+}
+
+function formatMarketError(error, exchange) {
+  if (error?.code === 'restricted_location' || error?.status === 451) {
+    return `${exchangeLabel(exchange)} 当前网络位置受地区限制，已被交易所拒绝访问；请切换 OKX/Bybit，或在允许访问 Binance 的用户网络环境下重试。`;
+  }
+  return error?.message || '未知错误';
 }
 
 // ============== STATUS POLLING ==============
@@ -275,10 +320,10 @@ async function refreshAgentData({ forceHeatmap = false } = {}) {
       pk,
       manual: true,
       force_heatmap: !!forceHeatmap,
-      coin: selectedHeaderSymbol().replace(/USDT$/, ''),
-      symbol: selectedHeaderSymbol(),
-      exchange: selectedHeaderExchange(),
-      interval: selectedHeaderInterval(),
+      coin: selectedHeatmapSymbol().replace(/USDT$/, ''),
+      symbol: selectedHeatmapSymbol(),
+      exchange: selectedHeatmapExchange(),
+      interval: selectedHeatmapInterval(),
       llm_review_provider: $('llmReviewProvider')?.value || undefined,
       llm_review_api_key: ($('llmReviewKey')?.value || '').trim(),
       llm_review_model: $('llmReviewModelSelect')?.value || undefined,
@@ -298,7 +343,7 @@ async function refreshAgentData({ forceHeatmap = false } = {}) {
     toast(forceHeatmap ? '已获取最新市场与清算地图数据' : '已获取最新市场数据', 'ok');
     return result;
   } catch (e) {
-    toast('获取数据失败: ' + e.message, 'err');
+    toast('获取数据失败: ' + formatMarketError(e, forceHeatmap ? selectedHeatmapExchange() : selectedHeaderExchange()), 'err', 5200);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = oldText; }
   }
@@ -320,7 +365,7 @@ function renderDashKpis(s) {
   }
   if ($('kpiPhaseSub')) $('kpiPhaseSub').textContent = s?.started_at ? `已运行 ${Math.floor((Date.now() - new Date(s.started_at).getTime()) / 60000)}分钟` : '未启动';
   if ($('kpiSymbol')) $('kpiSymbol').textContent = (cfg.coin || 'BTC') + '/USDT';
-  if ($('kpiExchange')) $('kpiExchange').textContent = (cfg.exchange || 'binance') + ' 永续';
+  if ($('kpiExchange')) $('kpiExchange').textContent = exchangeLabel(cfg.exchange || 'binance') + ' 永续';
   if ($('kpiBalance')) $('kpiBalance').innerHTML = fmt.price(balance) + ' <span class="unit">USDT</span>';
   if ($('kpiBalanceSub')) $('kpiBalanceSub').textContent = `可用 ${fmt.price(Math.max(0, balance - (orders.filter(o => (o.status || '').toUpperCase() === 'OPEN').length * sizeUsd)))} USDT`;
 
@@ -1949,6 +1994,8 @@ async function saveSettings() {
   const llmReviewBaseUrl = ($('llmReviewBaseUrl')?.value || '').trim();
   const binanceKey = ($('binanceApiKey')?.value || '').trim();
   const binanceSecret = ($('binanceApiSecret')?.value || '').trim();
+  const selectedSymbol = (($('configSymbol')?.value || $('hdrSymbol')?.value || 'BTC/USDT').replace('/', '')).toUpperCase();
+  const selectedExchange = normalizeExchange($('configExchange')?.value || $('hdrExchange')?.value || 'binance');
 
   // Build config payload for strategy config endpoint
   const config = {};
@@ -1960,6 +2007,9 @@ async function saveSettings() {
   if (llmReviewModel) config.llm_review_model = llmReviewModel;
   if (llmReviewContextLength) config.llm_review_context_length = +llmReviewContextLength;
   if (llmReviewBaseUrl) config.llm_review_base_url = llmReviewBaseUrl;
+  config.coin = selectedSymbol.replace(/USDT$/, '');
+  config.symbol = selectedSymbol;
+  config.exchange = selectedExchange;
 
   // Automation settings
   config.poll_seconds = Math.max(10, +($('autoMarketInterval')?.value || 60));
