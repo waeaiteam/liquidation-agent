@@ -17,6 +17,7 @@ const state = {
   xaiConfigured: false,
   xPosterConfigured: false,
   xLastData: null,
+  exchangeCredentials: { binance: {}, okx: {}, bybit: {} },
   grok: { apiKey: '', model: 'grok-4.3', baseUrl: 'https://api.x.ai/v1', systemPrompt: '' },
 };
 
@@ -179,8 +180,9 @@ async function loadDesktopKeys() {
     if (keys?.pk && $('pk')) $('pk').value = keys.pk;
     if (keys?.llm_key && $('llmKey')) $('llmKey').value = keys.llm_key;
     if (keys?.llm_review_key && $('llmReviewKey')) $('llmReviewKey').value = keys.llm_review_key;
-    if (keys?.binance_key && $('binanceApiKey')) $('binanceApiKey').value = keys.binance_key;
-    if (keys?.binance_secret && $('binanceApiSecret')) $('binanceApiSecret').value = keys.binance_secret;
+    state.exchangeCredentials = normalizeExchangeCredentials(keys);
+    if ($('exchangeCredExchange')) $('exchangeCredExchange').value = normalizeExchange(keys?.exchange || keys?.llm_default_exchange || state.lastStatus?.config?.exchange || 'binance');
+    renderExchangeCredentialFields();
     if (keys?.llm_default_provider && $('llmProvider')) $('llmProvider').value = keys.llm_default_provider;
     if (keys?.llm_review_provider && $('llmReviewProvider')) $('llmReviewProvider').value = keys.llm_review_provider;
     const mainProvider = (keys?.llm_providers || []).find(p => p.id === ($('llmProvider')?.value || keys.llm_default_provider));
@@ -266,6 +268,68 @@ function normalizeExchange(value) {
   if (raw.includes('okx')) return 'okx';
   if (raw.includes('bybit')) return 'bybit';
   return 'binance';
+}
+
+function normalizeExchangeCredentials(settings = {}) {
+  const existing = settings.exchange_credentials || {};
+  return {
+    binance: {
+      api_key: existing.binance?.api_key || settings.binance_key || '',
+      secret: existing.binance?.secret || settings.binance_secret || '',
+      passphrase: '',
+    },
+    okx: {
+      api_key: existing.okx?.api_key || '',
+      secret: existing.okx?.secret || '',
+      passphrase: existing.okx?.passphrase || '',
+    },
+    bybit: {
+      api_key: existing.bybit?.api_key || '',
+      secret: existing.bybit?.secret || '',
+      passphrase: '',
+    },
+  };
+}
+
+function exchangeCredentialName(exchange) {
+  if (exchange === 'okx') return 'OKX';
+  if (exchange === 'bybit') return 'Bybit';
+  return 'Binance';
+}
+
+function persistVisibleExchangeCredentials(exchangeOverride) {
+  const exchange = normalizeExchange(exchangeOverride || $('exchangeCredExchange')?.dataset?.currentExchange || $('exchangeCredExchange')?.value || 'binance');
+  if (!state.exchangeCredentials[exchange]) state.exchangeCredentials[exchange] = {};
+  state.exchangeCredentials[exchange] = {
+    api_key: ($('exchangeApiKey')?.value || '').trim(),
+    secret: ($('exchangeApiSecret')?.value || '').trim(),
+    passphrase: exchange === 'okx' ? (($('exchangeApiPassphrase')?.value || '').trim()) : '',
+  };
+}
+
+function renderExchangeCredentialFields() {
+  const exchange = normalizeExchange($('exchangeCredExchange')?.value || $('configExchange')?.value || 'binance');
+  const label = exchangeCredentialName(exchange);
+  const creds = state.exchangeCredentials[exchange] || {};
+  if ($('exchangeCredExchange')) $('exchangeCredExchange').value = exchange;
+  if ($('exchangeCredExchange')) $('exchangeCredExchange').dataset.currentExchange = exchange;
+  if ($('exchangeApiKeyLabel')) $('exchangeApiKeyLabel').textContent = `${label} API Key`;
+  if ($('exchangeApiSecretLabel')) $('exchangeApiSecretLabel').textContent = `${label} Secret Key`;
+  if ($('exchangeApiKey')) {
+    $('exchangeApiKey').placeholder = `输入 ${label} API Key`;
+    $('exchangeApiKey').value = creds.api_key || '';
+  }
+  if ($('exchangeApiSecret')) {
+    $('exchangeApiSecret').placeholder = `输入 ${label} Secret Key`;
+    $('exchangeApiSecret').value = creds.secret || '';
+  }
+  if ($('exchangePassphraseRow')) $('exchangePassphraseRow').style.display = exchange === 'okx' ? '' : 'none';
+  if ($('exchangeApiPassphrase')) $('exchangeApiPassphrase').value = exchange === 'okx' ? (creds.passphrase || '') : '';
+  if ($('exchangeRestrictionNote')) {
+    $('exchangeRestrictionNote').textContent = exchange === 'binance'
+      ? '应用不会绕过交易所地区规则；会按用户电脑当前网络环境直连 Binance。若该环境能访问 Binance，API key 可正常使用。'
+      : `${label} 凭证会独立保存，不会覆盖 Binance 或其他交易所的 API Key。`;
+  }
 }
 
 function exchangeLabel(value) {
@@ -1977,6 +2041,10 @@ async function bootstrap() {
       this.classList.add('active');
     });
   });
+  $('exchangeCredExchange')?.addEventListener('change', function () {
+    persistVisibleExchangeCredentials(this.dataset.currentExchange);
+    renderExchangeCredentialFields();
+  });
 }
 
 // ============== SAVE SETTINGS ==============
@@ -1992,8 +2060,10 @@ async function saveSettings() {
   const llmReviewModel = $('llmReviewModelSelect')?.value || '';
   const llmReviewContextLength = $('llmReviewContextLength')?.value || '';
   const llmReviewBaseUrl = ($('llmReviewBaseUrl')?.value || '').trim();
-  const binanceKey = ($('binanceApiKey')?.value || '').trim();
-  const binanceSecret = ($('binanceApiSecret')?.value || '').trim();
+  persistVisibleExchangeCredentials();
+  const exchangeCredentials = normalizeExchangeCredentials({ exchange_credentials: state.exchangeCredentials });
+  const binanceKey = exchangeCredentials.binance.api_key || '';
+  const binanceSecret = exchangeCredentials.binance.secret || '';
   const selectedSymbol = (($('configSymbol')?.value || $('hdrSymbol')?.value || 'BTC/USDT').replace('/', '')).toUpperCase();
   const selectedExchange = normalizeExchange($('configExchange')?.value || $('hdrExchange')?.value || 'binance');
 
@@ -2029,6 +2099,7 @@ async function saveSettings() {
       llmReviewBaseUrl,
       binanceKey,
       binanceSecret,
+      exchangeCredentials,
     });
     await api('POST', '/api/agent/config', config);
     state.pk = pk;
@@ -2069,6 +2140,8 @@ async function saveDesktopSettings(settings) {
     llm_default_model: settings.llmModel,
     llm_review_provider: settings.llmReviewProvider,
     llm_review_model: settings.llmReviewModel,
+    exchange_credentials: settings.exchangeCredentials || {},
+    exchange_default: normalizeExchange($('configExchange')?.value || $('hdrExchange')?.value || 'binance'),
     binance_key: settings.binanceKey || '',
     binance_secret: settings.binanceSecret || '',
   });

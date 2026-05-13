@@ -1720,14 +1720,27 @@ button,input,select,textarea{font:inherit;color:inherit}
               <div style="display:flex;gap:8px"><input id="pk" type="password" placeholder="0x... (Base 链钱包私钥，用于 402 协议单次支付 0.001 USDC 获取清算数据，无需 gas)" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)"><button style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:11px;cursor:pointer;white-space:nowrap">显示</button></div>
             </div>
             <div>
-              <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Binance API Key <span style="color:var(--text-3);font-weight:400">— 受 Binance 地区限制影响</span></label>
-              <input id="binanceApiKey" type="password" placeholder="输入 Binance API Key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)">
+              <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">交易所 API 凭证</label>
+              <select id="exchangeCredExchange" class="hdr-select" style="width:100%;margin-bottom:8px">
+                <option value="binance">Binance (地区可能受限)</option>
+                <option value="okx">OKX</option>
+                <option value="bybit">Bybit</option>
+              </select>
+              <div style="font-size:10.5px;color:var(--text-3);line-height:1.4">行情优先使用交易所公开接口；需要账户级能力或后续实盘/模拟撮合时，会读取这里保存的对应交易所凭证。Binance 会按用户电脑当前网络环境判定地区。</div>
             </div>
             <div>
-              <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Binance Secret Key</label>
-              <input id="binanceApiSecret" type="password" placeholder="输入 Binance Secret Key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)">
-              <div style="font-size:10.5px;color:var(--text-3);margin-top:4px;line-height:1.4">应用不会绕过交易所地区规则；会按用户电脑当前网络环境直连 Binance。若该环境能访问 Binance，API key 可正常使用。</div>
+              <label id="exchangeApiKeyLabel" style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">API Key</label>
+              <input id="exchangeApiKey" type="password" placeholder="输入 API Key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)">
             </div>
+            <div>
+              <label id="exchangeApiSecretLabel" style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Secret Key</label>
+              <input id="exchangeApiSecret" type="password" placeholder="输入 Secret Key" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)">
+            </div>
+            <div id="exchangePassphraseRow" style="display:none">
+              <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Passphrase</label>
+              <input id="exchangeApiPassphrase" type="password" placeholder="输入 OKX Passphrase" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface-2)">
+            </div>
+            <div id="exchangeRestrictionNote" style="font-size:10.5px;color:var(--text-3);line-height:1.4">应用不会绕过交易所地区规则；会按用户电脑当前网络环境直连 Binance。若该环境能访问 Binance，API key 可正常使用。</div>
             <div>
               <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Grok API <span style="color:var(--text-3);font-weight:400">— X 热度分析 &amp; Grok 对话 (支持官方/中转)</span></label>
               <div style="display:flex;gap:8px;margin-bottom:6px">
