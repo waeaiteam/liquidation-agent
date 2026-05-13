@@ -1623,6 +1623,16 @@ button,input,select,textarea{font:inherit;color:inherit}
         <input id="pipelineModel" type="text" placeholder="模型 (留空用默认)" style="width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
         <input id="pipelineBaseUrl" type="text" placeholder="自定义 Base URL (中转)" style="width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
       </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <label style="font-size:12px;color:var(--text-2);font-weight:500;white-space:nowrap">图片市场 LLM</label>
+        <select id="pipelineImageProvider" class="hdr-select" style="width:140px">
+          <option value="">跟随文字模型</option>
+          {% for p in providers %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+        </select>
+        <input id="pipelineImageApiKey" type="password" placeholder="图片 LLM API Key (留空跟随)" style="flex:1;min-width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
+        <input id="pipelineImageModel" type="text" placeholder="图片模型 (留空默认)" style="width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
+        <input id="pipelineImageBaseUrl" type="text" placeholder="图片 Base URL (中转)" style="width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
+      </div>
       <div style="margin-top:6px;font-size:10.5px;color:var(--text-3)">支持所有 OpenAI 兼容 API，包括 OpenRouter、302.ai、SiliconFlow 等中转服务。填写 Base URL 即可。</div>
     </div>
 

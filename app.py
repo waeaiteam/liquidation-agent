@@ -613,6 +613,8 @@ def x_poster_post():
             text=text,
             reply_to_id=payload.get("reply_to_id"),
             dry_run=dry_run,
+            media_data=payload.get("media_data"),
+            media_alt_text=payload.get("media_alt_text"),
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -670,6 +672,10 @@ def x_pipeline_generate():
     api_key = (payload.get("api_key") or "").strip() or None
     model = (payload.get("model") or "").strip() or None
     custom_base_url = (payload.get("custom_base_url") or "").strip() or None
+    image_provider_id = (payload.get("image_provider") or "").strip() or None
+    image_api_key = (payload.get("image_api_key") or "").strip() or None
+    image_model = (payload.get("image_model") or "").strip() or None
+    image_custom_base_url = (payload.get("image_custom_base_url") or "").strip() or None
 
     if not pipeline.is_configured() and not api_key:
         return jsonify({"error": "Pipeline LLM not configured. Provide api_key or configure in settings."}), 400
@@ -680,6 +686,10 @@ def x_pipeline_generate():
             api_key=api_key,
             model=model,
             custom_base_url=custom_base_url,
+            image_provider_id=image_provider_id,
+            image_api_key=image_api_key,
+            image_model=image_model,
+            image_custom_base_url=image_custom_base_url,
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -688,7 +698,7 @@ def x_pipeline_generate():
 
 @app.route("/api/x/pipeline/publish", methods=["POST"])
 def x_pipeline_publish():
-    """Publish a reviewed tweet. Body: {text, dry_run?}"""
+    """Publish a reviewed tweet. Body: {text, dry_run?, media_data?, media_alt_text?}"""
     payload = request.get_json() or {}
     text = str(payload.get("text") or "").strip()
     if not text:
@@ -700,7 +710,12 @@ def x_pipeline_publish():
         return jsonify({"error": "X poster not configured"}), 400
 
     try:
-        result = poster.post_tweet(text=text, dry_run=dry_run)
+        result = poster.post_tweet(
+            text=text,
+            dry_run=dry_run,
+            media_data=payload.get("media_data"),
+            media_alt_text=payload.get("media_alt_text"),
+        )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except RuntimeError as e:

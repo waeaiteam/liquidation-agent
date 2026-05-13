@@ -2021,10 +2021,18 @@ async function pipelineGenerate() {
   const apiKey = ($('pipelineApiKey')?.value || '').trim();
   const model = ($('pipelineModel')?.value || '').trim();
   const baseUrl = ($('pipelineBaseUrl')?.value || '').trim();
+  const imageProvider = $('pipelineImageProvider')?.value;
+  const imageApiKey = ($('pipelineImageApiKey')?.value || '').trim();
+  const imageModel = ($('pipelineImageModel')?.value || '').trim();
+  const imageBaseUrl = ($('pipelineImageBaseUrl')?.value || '').trim();
   if (provider) body.provider = provider;
   if (apiKey) body.api_key = apiKey;
   if (model) body.model = model;
   if (baseUrl) body.custom_base_url = baseUrl;
+  if (imageProvider) body.image_provider = imageProvider;
+  if (imageApiKey) body.image_api_key = imageApiKey;
+  if (imageModel) body.image_model = imageModel;
+  if (imageBaseUrl) body.image_custom_base_url = imageBaseUrl;
 
   try {
     const data = await api('POST', '/api/x/pipeline/generate', body);
@@ -2059,6 +2067,8 @@ function pipelineRenderCandidates(data) {
   if (ctxText) ctxText.textContent = data.context_summary || '—';
   if (costEl) costEl.textContent = `费用 $${(data.cost_usd || 0).toFixed(4)}`;
 
+  if (data.image_error) toast('图片 LLM 失败，已使用本地市场图卡: ' + data.image_error, 'info', 4200);
+
   const styleColors = {
     '理性分析': { bg: 'var(--blue-soft)', color: 'var(--blue)', border: 'var(--blue)' },
     '激进观点': { bg: 'var(--red-soft)', color: 'var(--red-text)', border: 'var(--red)' },
@@ -2067,18 +2077,21 @@ function pipelineRenderCandidates(data) {
 
   container.innerHTML = candidates.map((c, i) => {
     const sc = styleColors[c.style] || { bg: 'var(--surface-2)', color: 'var(--text-2)', border: 'var(--border)' };
+    const imageSvg = pipelineImageSvg(c.image_card || {}, i);
     return `
       <div class="card" style="border-top:3px solid ${sc.border};display:flex;flex-direction:column">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
           <span style="padding:3px 8px;background:${sc.bg};color:${sc.color};border-radius:4px;font-size:10.5px;font-weight:600">${c.style || '风格 ' + (i+1)}</span>
           <span style="font-family:var(--mono);font-size:10.5px;color:var(--text-3)">${c.char_count}/280</span>
         </div>
+        <div id="pipelineImage${i}" data-svg="${escHtml(imageSvg)}" style="margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#111827">${imageSvg}</div>
         <div style="font-size:13px;line-height:1.7;flex:1;margin-bottom:12px;white-space:pre-wrap" id="pipelineText${i}">${escHtml(c.text)}</div>
         <div style="display:flex;gap:4px;font-size:10px;color:var(--text-3);margin-bottom:10px;flex-wrap:wrap">
           ${(c.data_sources || []).map(s => `<span style="padding:2px 6px;background:var(--surface-2);border-radius:3px">${s}</span>`).join('')}
           <span style="padding:2px 6px;background:var(--surface-2);border-radius:3px">置信度 ${((c.confidence || 0) * 100).toFixed(0)}%</span>
         </div>
         <div style="display:flex;gap:6px">
+          <button onclick="pipelineManualPost(${i})" style="flex:1;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px;cursor:pointer">手动</button>
           <button onclick="pipelineEdit(${i})" style="flex:1;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px;cursor:pointer">编辑</button>
           <button onclick="pipelineDryRun(${i})" style="flex:1;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px;cursor:pointer">Dry Run</button>
           <button onclick="pipelinePublish(${i})" style="flex:1;padding:6px;border:none;border-radius:6px;background:var(--purple);color:#fff;font-size:11px;font-weight:600;cursor:pointer">发布</button>
@@ -2090,6 +2103,58 @@ function pipelineRenderCandidates(data) {
 }
 
 function escHtml(s) { return escapeHtml(s); }
+
+function pipelineImageSvg(card, idx = 0) {
+  const trend = String(card.trend || 'neutral').toLowerCase();
+  const accent = trend === 'bullish' ? '#00b894' : trend === 'bearish' ? '#e74c3c' : trend === 'risk' ? '#f39c12' : '#6c5ce7';
+  const bullets = Array.isArray(card.bullets) ? card.bullets.slice(0, 4) : [];
+  const safe = v => escapeHtml(v == null ? '' : String(v));
+  const bulletSvg = bullets.map((b, i) => `<text x="56" y="${258 + i * 34}" fill="#d1d5db" font-size="22" font-family="Arial, sans-serif">• ${safe(b)}</text>`).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" width="100%" role="img" aria-label="${safe(card.alt_text || card.title || 'market card')}">
+    <defs><linearGradient id="pg${idx}" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#111827"/><stop offset="1" stop-color="#1f2937"/></linearGradient></defs>
+    <rect width="1200" height="675" fill="url(#pg${idx})"/>
+    <rect x="32" y="32" width="1136" height="611" rx="26" fill="rgba(255,255,255,.035)" stroke="rgba(255,255,255,.12)"/>
+    <text x="56" y="92" fill="#9ca3af" font-size="20" font-family="Arial, sans-serif">${safe(card.subtitle || '实时市场')}</text>
+    <text x="56" y="158" fill="#ffffff" font-size="46" font-weight="700" font-family="Arial, sans-serif">${safe(card.title || '市场观察')}</text>
+    <rect x="56" y="202" width="390" height="132" rx="18" fill="rgba(255,255,255,.06)" stroke="${accent}"/>
+    <text x="84" y="250" fill="#9ca3af" font-size="20" font-family="Arial, sans-serif">${safe(card.metric_label || '现价')}</text>
+    <text x="84" y="306" fill="${accent}" font-size="44" font-weight="700" font-family="Arial, sans-serif">${safe(card.metric_value || '-')}</text>
+    ${bulletSvg}
+    <path d="M760 420 C820 330,880 470,940 380 S1060 320,1120 260" fill="none" stroke="${accent}" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="1120" cy="260" r="12" fill="${accent}"/>
+    <text x="56" y="604" fill="#9ca3af" font-size="18" font-family="Arial, sans-serif">${safe(card.risk_note || '非投资建议')}</text>
+    <text x="1006" y="604" fill="#9ca3af" font-size="18" font-family="Arial, sans-serif">Liquidation Agent</text>
+  </svg>`;
+}
+
+function pipelineCandidateSvg(idx) {
+  const el = $('pipelineImage' + idx);
+  return el?.dataset?.svg || pipelineImageSvg(state.pipelineCandidates?.[idx]?.image_card || {}, idx);
+}
+
+function svgToPngDataUrl(svg) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1200;
+        canvas.height = 675;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/png'));
+      } catch (e) {
+        URL.revokeObjectURL(url);
+        reject(e);
+      }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image render failed')); };
+    img.src = url;
+  });
+}
 
 function pipelineEdit(idx) {
   const el = $('pipelineText' + idx);
@@ -2111,11 +2176,30 @@ async function pipelineDryRun(idx) {
   if (!state.pipelineCandidates?.[idx]) return;
   const text = state.pipelineCandidates[idx].text;
   try {
-    const result = await api('POST', '/api/x/pipeline/publish', { text, dry_run: true });
+    const mediaData = await svgToPngDataUrl(pipelineCandidateSvg(idx));
+    const result = await api('POST', '/api/x/pipeline/publish', { text, dry_run: true, media_data: mediaData, media_alt_text: state.pipelineCandidates[idx].image_card?.alt_text || '' });
     toast(`[Dry Run] ${result.char_count || text.length} 字符，预览通过`, 'info');
   } catch (e) {
     toast('Dry Run 失败: ' + e.message, 'err');
   }
+}
+
+async function pipelineManualPost(idx) {
+  if (!state.pipelineCandidates?.[idx]) return;
+  const text = state.pipelineCandidates[idx].text || '';
+  try {
+    const mediaData = await svgToPngDataUrl(pipelineCandidateSvg(idx));
+    if (navigator.clipboard && window.ClipboardItem) {
+      const blob = await (await fetch(mediaData)).blob();
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      toast('图片已复制到剪贴板，X 页面打开后可粘贴图片并点击发帖', 'ok', 4200);
+    } else {
+      toast('当前浏览器不支持图片剪贴板，已打开文字发帖页', 'info', 4200);
+    }
+  } catch {
+    toast('图片复制失败，已打开文字发帖页', 'info', 4200);
+  }
+  window.open('https://twitter.com/intent/tweet?text=' + encodeURIComponent(text), '_blank');
 }
 
 async function pipelinePublish(idx) {
@@ -2123,7 +2207,8 @@ async function pipelinePublish(idx) {
   const text = state.pipelineCandidates[idx].text;
   if (!confirm(`确认发布这条推文？\n\n"${text.slice(0, 100)}${text.length > 100 ? '...' : ''}"`)) return;
   try {
-    const result = await api('POST', '/api/x/pipeline/publish', { text, dry_run: false });
+    const mediaData = await svgToPngDataUrl(pipelineCandidateSvg(idx));
+    const result = await api('POST', '/api/x/pipeline/publish', { text, dry_run: false, media_data: mediaData, media_alt_text: state.pipelineCandidates[idx].image_card?.alt_text || '' });
     if (result.url) {
       toast('发布成功！', 'ok');
       window.open(result.url, '_blank');

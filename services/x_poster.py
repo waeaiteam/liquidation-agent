@@ -16,6 +16,9 @@ Design:
 from __future__ import annotations
 
 import os
+import base64
+import re
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,6 +44,7 @@ class XPosterService:
 
     def __init__(self) -> None:
         self._client: Any = None  # tweepy.Client
+        self._api_v1: Any = None  # tweepy.API for media upload
         self._credentials: dict[str, str] = {}
         self._posted_log: list[PostedTweet] = []
         self._rate_limited_until: float = 0.0
@@ -77,6 +81,13 @@ class XPosterService:
             "access_token": access_token.strip(),
             "access_token_secret": access_token_secret.strip(),
         }
+        auth = tweepy.OAuth1UserHandler(
+            self._credentials["api_key"],
+            self._credentials["api_secret"],
+            self._credentials["access_token"],
+            self._credentials["access_token_secret"],
+        )
+        self._api_v1 = tweepy.API(auth, wait_on_rate_limit=False)
         self._client = tweepy.Client(
             consumer_key=self._credentials["api_key"],
             consumer_secret=self._credentials["api_secret"],
@@ -110,6 +121,8 @@ class XPosterService:
         text: str,
         reply_to_id: str | None = None,
         dry_run: bool = False,
+        media_data: str | None = None,
+        media_alt_text: str | None = None,
     ) -> dict[str, Any]:
         """Post a tweet. If reply_to_id is set, posts as reply."""
         if not text or not text.strip():
@@ -122,6 +135,7 @@ class XPosterService:
                 "text": text,
                 "char_count": len(text),
                 "reply_to": reply_to_id,
+                "has_media": bool(media_data),
                 "preview": f"[DRY RUN] Would post: {text}",
             }
         if not self.is_configured():
@@ -133,6 +147,9 @@ class XPosterService:
         kwargs: dict[str, Any] = {"text": text}
         if reply_to_id:
             kwargs["in_reply_to_tweet_id"] = reply_to_id
+        if media_data:
+            media_id = self._upload_media(media_data, media_alt_text)
+            kwargs["media_ids"] = [media_id]
 
         try:
             resp = self._client.create_tweet(**kwargs)
@@ -168,7 +185,49 @@ class XPosterService:
             "url": url,
             "posted_at": posted.posted_at,
             "reply_to": reply_to_id,
+            "has_media": bool(media_data),
         }
+
+    def _upload_media(self, media_data: str, alt_text: str | None = None) -> str:
+        if not self._api_v1:
+            raise RuntimeError("X media upload client not configured")
+        raw, suffix = self._decode_media_data(media_data)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+        try:
+            media = self._api_v1.media_upload(filename=tmp_path)
+            media_id = str(media.media_id_string or media.media_id)
+            if alt_text:
+                try:
+                    self._api_v1.create_media_metadata(media_id, alt_text[:1000])
+                except Exception:
+                    pass
+            return media_id
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    def _decode_media_data(self, media_data: str) -> tuple[bytes, str]:
+        if not isinstance(media_data, str) or not media_data.strip():
+            raise ValueError("empty media data")
+        data = media_data.strip()
+        suffix = ".png"
+        m = re.match(r"^data:image/(png|jpeg|jpg);base64,(.+)$", data, re.IGNORECASE | re.DOTALL)
+        if m:
+            suffix = ".jpg" if m.group(1).lower() in {"jpeg", "jpg"} else ".png"
+            data = m.group(2)
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except Exception as exc:
+            raise ValueError("media_data must be base64 image data") from exc
+        if len(raw) > 5 * 1024 * 1024:
+            raise ValueError("media image too large; max 5MB")
+        if not raw.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")):
+            raise ValueError("media image must be PNG or JPEG")
+        return raw, suffix
 
     def post_thread(self, tweets: list[str], dry_run: bool = False) -> dict[str, Any]:
         """Post a thread (each tweet replies to previous). Returns list of results."""
