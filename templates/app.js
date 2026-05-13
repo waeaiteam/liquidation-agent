@@ -21,6 +21,48 @@ const state = {
   grok: { apiKey: '', model: 'grok-4.3', baseUrl: 'https://api.x.ai/v1', systemPrompt: '' },
 };
 
+function setText(id, value) {
+  const el = $(id);
+  if (el) el.textContent = value == null || value === '' ? '-' : String(value);
+}
+
+function setClass(id, cls) {
+  const el = $(id);
+  if (el) el.className = cls || '';
+}
+
+function fullSymbol(symbol) {
+  return String(symbol || '').replace('/', '').toUpperCase();
+}
+
+function slashSymbol(symbol) {
+  const s = fullSymbol(symbol);
+  return s.endsWith('USDT') ? s.replace('USDT', '/USDT') : (symbol || '-');
+}
+
+function signedPct(value) {
+  if (value == null || Number.isNaN(+value)) return '-';
+  const n = +value;
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+function orderSide(order) {
+  return String(order?.side || '').toUpperCase();
+}
+
+function orderPrice(order, key, fallbackKey) {
+  const v = order?.[key] ?? order?.[fallbackKey];
+  return v == null || v === '' ? null : +v;
+}
+
+function orderQty(order) {
+  return order?.qty ?? order?.quantity ?? order?.size ?? null;
+}
+
+function latestHeatmapSnapshot() {
+  return state.lastStatus?.heatmap?.snapshots?.[0] || {};
+}
+
 const CHAT_WELCOME = '你好！我是清算反向策略 Agent。我可以帮你分析当前市场状况、解读清算地图数据、调整策略参数，或者回答任何关于交易策略的问题。';
 
 // ============== UTILITIES ==============
@@ -576,7 +618,10 @@ pageHooks.heatmap = function () {
   if (!state.keysReady) return;
   const chart = getChart('hmDetailChart');
   if (chart) renderHeatmapChart(chart, 'full');
+  renderHeatmapSummary();
   renderHeatmapZones();
+  renderHeatmapAlerts();
+  renderHeatmapHistory();
   const corrChart = getChart('hmCorrChart');
   if (corrChart) {
     const lastPrice = state.lastStatus?.last_snapshot?.price || state.lastStatus?.last_signal?.price;
@@ -607,11 +652,54 @@ pageHooks.heatmap = function () {
   }
 };
 
+function heatmapClustersFromSnapshot(snapshot) {
+  const direct = snapshot?.heatmap?.clusters || [];
+  if (Array.isArray(direct) && direct.length) return direct;
+  const points = snapshot?.liq_map?.points || [];
+  if (!Array.isArray(points) || !points.length) return [];
+  return points
+    .map(p => ({ price: +p.price, value: +(p.value ?? p.intensity ?? 0), side: p.side || p.series || 'liq' }))
+    .filter(p => Number.isFinite(p.price) && Number.isFinite(p.value) && p.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 12)
+    .map(p => {
+      const span = Math.max(p.price * 0.001, 1);
+      return {
+        low: p.price - span,
+        high: p.price + span,
+        score: p.value,
+        volume: p.value,
+        side: /above|short|ask/i.test(p.side) ? 'above' : /below|long|bid/i.test(p.side) ? 'below' : 'near',
+        leverage_tier: p.value >= 0.75 ? 'high' : p.value >= 0.4 ? 'medium' : 'low',
+      };
+    });
+}
+
+function renderHeatmapSummary() {
+  const snapshot = latestHeatmapSnapshot();
+  const subtitle = qs('#page-heatmap .card-title span');
+  if (subtitle) subtitle.textContent = `(${slashSymbol(selectedHeatmapSymbol())} · ${selectedHeatmapInterval()} · ${exchangeLabel(selectedHeatmapExchange())} · ${$('hmLev')?.value || '25x'})`;
+  const points = Array.isArray(snapshot?.liq_map?.points) ? snapshot.liq_map.points : [];
+  const clusters = heatmapClustersFromSnapshot(snapshot);
+  const total = points.reduce((acc, p) => acc + (+(p.value ?? p.intensity ?? 0) || 0), 0);
+  const maxCluster = clusters.slice().sort((a, b) => (+(b.volume ?? b.score ?? 0)) - (+(a.volume ?? a.score ?? 0)))[0];
+  const statsCard = qsa('#page-heatmap div[style*="grid-template-columns:1fr 1fr 1.2fr"] > .card')[0];
+  if (!statsCard) return;
+  statsCard.innerHTML = `
+    <div class="card-head"><div class="card-title">清算统计</div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">
+      <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">有效热力点</div><div style="font-size:18px;font-weight:700;font-family:var(--mono)">${points.length}</div><div style="font-size:10.5px;color:var(--text-3)">来自 Claw402 返回</div></div>
+      <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">累计强度</div><div style="font-size:18px;font-weight:700;font-family:var(--mono)">${fmt.num(total, 2)}<span style="font-size:11px;color:var(--text-3);font-weight:400"> raw</span></div><div style="font-size:10.5px;color:var(--text-3)">未伪造 USDT 金额</div></div>
+      <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">最强区域</div><div style="font-size:14px;font-weight:700;font-family:var(--mono)">${maxCluster ? `${fmt.price(maxCluster.low, 0)} - ${fmt.price(maxCluster.high, 0)}` : '-'}</div><div style="font-size:10.5px;color:var(--text-3)">强度 ${maxCluster ? fmt.num(maxCluster.volume ?? maxCluster.score, 2) : '-'}</div></div>
+    </div>
+    <div style="font-size:11px;color:var(--text-2);line-height:1.6">清算地图仅展示后端归一化后的真实 Claw402 响应；未返回的字段显示为空，不再使用演示数据。</div>`;
+}
+
 function renderHeatmapZones() {
   const body = $('hmZonesBody');
   if (!body) return;
-  const snapshot = state.lastStatus?.heatmap?.snapshots?.[0] || {};
-  const clusters = snapshot.heatmap?.clusters || [];
+  const snapshot = latestHeatmapSnapshot();
+  const clusters = heatmapClustersFromSnapshot(snapshot);
   if (!clusters.length) {
     body.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:18px">暂无真实清算地图聚类数据</td></tr>';
     return;
@@ -629,11 +717,57 @@ function renderHeatmapZones() {
   }).join('');
 }
 
+function renderHeatmapAlerts() {
+  const cards = qsa('#page-heatmap div[style*="grid-template-columns:1fr 1fr 1.2fr"] > .card');
+  const alertCard = cards[1];
+  if (!alertCard) return;
+  const clusters = heatmapClustersFromSnapshot(latestHeatmapSnapshot()).slice(0, 6);
+  alertCard.innerHTML = `
+    <div class="card-head"><div class="card-title">大额清算提醒 <span class="info">i</span></div></div>
+    <table class="tbl" style="font-size:11.5px">
+      <thead><tr><th>价格 (USDT)</th><th>方向</th><th>强度</th><th>触发条件</th><th>时间</th></tr></thead>
+      <tbody>${clusters.length ? clusters.map(c => {
+        const side = c.side === 'above' ? '空头清算' : c.side === 'below' ? '多头清算' : '现价附近';
+        const price = ((+c.low + +c.high) / 2) || +c.price || 0;
+        const cls = c.side === 'above' ? 'neg' : 'pos';
+        return `<tr><td class="${cls}" style="font-weight:600">${fmt.price(price, 0)}</td><td>${side}</td><td class="${cls}" style="font-weight:600">${fmt.num(c.volume ?? c.score, 2)}</td><td>${c.side === 'above' ? '>=' : c.side === 'below' ? '<=' : '~'} ${fmt.price(price, 0)}</td><td>${fmt.ts(latestHeatmapSnapshot().timestamp)}</td></tr>`;
+      }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--text-3);padding:18px">暂无真实清算提醒</td></tr>'}</tbody>
+    </table>`;
+}
+
+function renderHeatmapHistory() {
+  const directCards = qsa('#page-heatmap > .card');
+  const historyCard = directCards[directCards.length - 1];
+  if (!historyCard) return;
+  const heatmapEvents = (state.lastEvents || []).filter(e => e.kind === 'heatmap' || e.kind === 'signal').slice(0, 5);
+  historyCard.innerHTML = `
+    <div class="card-head"><div class="card-title">历史信号对照</div><button class="card-action">真实事件 ${heatmapEvents.length}</button></div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">
+      ${heatmapEvents.length ? heatmapEvents.map(e => `
+        <div style="padding:10px;background:var(--surface-2);border-radius:8px;border-left:3px solid ${e.kind === 'signal' ? 'var(--purple)' : 'var(--green)'}">
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">● ${fmt.ts(e.timestamp)}</div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:4px">${escapeHtml(e.title || e.kind || '-')}</div>
+          <div style="font-size:11px;color:var(--text-2)">${escapeHtml(e.detail || e.message || '')}</div>
+        </div>`).join('') : '<div style="grid-column:1/-1;text-align:center;color:var(--text-3);padding:20px;background:var(--surface-2);border-radius:8px">暂无真实历史信号</div>'}
+    </div>`;
+}
+
 // ============== MARKET PAGE ==============
 pageHooks.market = function () {
   if (!state.keysReady) return;
   const snap = state.lastStatus?.last_snapshot || {};
   const market = snap.market || {};
+  const symbol = slashSymbol(snap.symbol || selectedHeaderSymbol());
+  const labels = qsa('#page-market .kpi-label');
+  if (labels[0]) labels[0].textContent = `${symbol} 价格`;
+  if ($('mktBtcPrice')) $('mktBtcPrice').textContent = snap.price ? '$' + fmt.price(snap.price, 2) : '-';
+  if ($('mktBtcChg')) {
+    $('mktBtcChg').textContent = signedPct(market.change_24h_pct);
+    $('mktBtcChg').className = (+market.change_24h_pct || 0) >= 0 ? 'kpi-sub pos' : 'kpi-sub neg';
+  }
+  if ($('mktEthPrice')) $('mktEthPrice').textContent = symbol.startsWith('ETH') && snap.price ? '$' + fmt.price(snap.price, 2) : '-';
+  if ($('mktEthChg')) $('mktEthChg').textContent = symbol.startsWith('ETH') ? signedPct(market.change_24h_pct) : '-';
+  if ($('mktCap')) $('mktCap').textContent = '-';
   if ($('mktBtcPrice') && (snap.symbol || '').startsWith('BTC')) $('mktBtcPrice').textContent = '$' + fmt.price(snap.price, 2);
   if ($('mktBtcChg')) $('mktBtcChg').textContent = market.change_24h_pct == null ? '—' : ((+market.change_24h_pct >= 0 ? '+' : '') + fmt.pct(market.change_24h_pct));
   if ($('mktVol')) $('mktVol').textContent = market.volume_24h_quote ? fmt.num(+market.volume_24h_quote / 1e9, 2) : '—';
@@ -694,6 +828,7 @@ pageHooks.market = function () {
       ],
     }, true);
   }
+  renderMarketDerivedPanels(snap, market);
 
   const volChart = getChart('mktVolChart');
   if (volChart) {
@@ -706,6 +841,46 @@ pageHooks.market = function () {
     }, true);
   }
 };
+
+function renderMarketDerivedPanels(snap, market) {
+  const symbol = slashSymbol(snap?.symbol || selectedHeaderSymbol());
+  const kpiSubs = qsa('#page-market .kpi-sub');
+  if (kpiSubs[2]) { kpiSubs[2].className = 'kpi-sub'; kpiSubs[2].textContent = '未配置总市值 provider'; }
+  if (kpiSubs[3]) { kpiSubs[3].className = 'kpi-sub'; kpiSubs[3].textContent = '来自交易所 ticker'; }
+  if (kpiSubs[4]) { kpiSubs[4].className = 'kpi-sub'; kpiSubs[4].textContent = '未配置恐惧贪婪 provider'; }
+  if (kpiSubs[5]) { kpiSubs[5].className = 'kpi-sub'; kpiSubs[5].textContent = '由 24h 高低价计算'; }
+  const sectors = $('mktSectors');
+  if (sectors) {
+    sectors.innerHTML = `<div style="text-align:center;color:var(--text-3);padding:20px;background:var(--surface-2);border-radius:8px">未配置真实板块轮动数据源，已停止展示演示板块数据。</div>`;
+  }
+
+  const sentimentCard = $('mktSentimentGauge')?.parentElement;
+  const details = sentimentCard ? qsa(':scope > div', sentimentCard)[2] : null;
+  if (details) {
+    details.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">多空比</span><span style="font-family:var(--mono);font-weight:600">${market.long_short_ratio ?? '-'}</span></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">资金费率</span><span style="font-family:var(--mono);font-weight:600">${market.funding_rate == null ? '-' : signedPct(+market.funding_rate * 100)}</span></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">持仓量变化</span><span style="font-family:var(--mono);font-weight:600">${market.open_interest_change_pct == null ? '-' : signedPct(market.open_interest_change_pct)}</span></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">数据源</span><span style="font-family:var(--mono);font-weight:600">${escapeHtml(market.exchange || market.source || '-')}</span></div>`;
+  }
+
+  const flowGrid = $('mktFlowChart')?.nextElementSibling;
+  if (flowGrid) {
+    flowGrid.innerHTML = `
+      <div style="padding:8px;background:var(--green-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">24h 成交额</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--green)">${market.volume_24h_quote ? fmt.num(market.volume_24h_quote, 2) : '-'}</div></div>
+      <div style="padding:8px;background:var(--red-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">净流入/流出</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red)">未配置 provider</div></div>`;
+  }
+
+  const moversBody = qs('#page-market table.tbl tbody');
+  if (moversBody) {
+    moversBody.innerHTML = snap?.price ? `<tr>
+      <td>${escapeHtml(symbol)}</td>
+      <td>${fmt.price(snap.price, 2)}</td>
+      <td class="${(+market.change_24h_pct || 0) >= 0 ? 'pos' : 'neg'}">${signedPct(market.change_24h_pct)}</td>
+      <td>${market.volume_24h_quote ? fmt.num(market.volume_24h_quote, 2) : '-'}</td>
+    </tr>` : '<tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:18px">暂无真实交易所行情</td></tr>';
+  }
+}
 
 // ============== EVOLUTION PAGE ==============
 pageHooks.evolution = function () {
@@ -749,13 +924,21 @@ async function loadOrders() {
   try {
     const j = await api('GET', '/api/orders');
     state.lastOrders = j.orders || j || [];
-    renderOrdersTable();
+    renderOrdersPage();
     renderDashRecentOrders(state.lastOrders);
   } catch {}
 }
 
+function renderOrdersPage() {
+  renderOrdersTable();
+  renderOrderSummary();
+  renderOrderDetail((state.lastOrders || [])[0]);
+  renderOrderDistribution();
+  renderOrderAnomalies();
+}
+
 function renderOrdersTable() {
-  const tbody = $('ordersBody');
+  const tbody = $('ordersTableBody');
   if (!tbody) return;
   if (!state.keysReady || !state.lastOrders.length) {
     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-3);padding:30px">暂无订单数据</td></tr>';
@@ -778,6 +961,111 @@ function renderOrdersTable() {
     </tr>`;
   }).join('');
 }
+
+function renderOrdersTable() {
+  const tbody = $('ordersTableBody');
+  if (!tbody) return;
+  const orders = state.keysReady ? (state.lastOrders || []) : [];
+  if (!orders.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-3);padding:30px">暂无真实订单数据</td></tr>';
+    return;
+  }
+  tbody.innerHTML = orders.slice(0, 20).map(o => {
+    const pnl = +(o.pnl_usd ?? o.pnl_pct ?? 0) || 0;
+    const cls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
+    const st = (o.status || '').toUpperCase();
+    const statusTag = st === 'OPEN' ? '<span class="tag tag-up">进行中</span>' : st === 'CLOSED' ? '<span class="tag tag-done">已完成</span>' : `<span class="tag">${escapeHtml(o.status || '-')}</span>`;
+    const side = orderSide(o);
+    const sideTag = side === 'LONG' ? '<span class="tag tag-up">做多</span>' : side === 'SHORT' ? '<span class="tag tag-dn">做空</span>' : '<span class="tag">-</span>';
+    return `<tr>
+      <td>${fmt.ts(o.timestamp || o.created_at)}</td>
+      <td style="font-weight:600">${slashSymbol(o.symbol || '')}</td>
+      <td>${sideTag}</td>
+      <td>${escapeHtml(o.type || o.order_type || 'paper')}</td>
+      <td>${orderQty(o) ?? '-'}</td>
+      <td>${fmt.price(orderPrice(o, 'entry_price', 'entry'), 2)}</td>
+      <td>${st === 'CLOSED' ? fmt.price(orderPrice(o, 'exit_price', 'exit'), 2) : '-'}</td>
+      <td>${statusTag}</td>
+      <td class="${cls}" style="font-weight:600">${pnl > 0 ? '+' : ''}${fmt.num(pnl, 2)}</td>
+      <td>${escapeHtml(o.signal_id || o.reason || o.strategy || '-')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderOrderSummary() {
+  const orders = state.lastOrders || [];
+  const open = orders.filter(o => (o.status || '').toUpperCase() === 'OPEN');
+  const closed = orders.filter(o => (o.status || '').toUpperCase() === 'CLOSED');
+  const turnover = closed.reduce((acc, o) => acc + Math.abs((+orderQty(o) || 0) * (orderPrice(o, 'entry_price', 'entry') || 0)), 0);
+  const pnl = orders.reduce((acc, o) => acc + (+(o.pnl_usd ?? 0) || 0), 0);
+  const values = qsa('#page-orders .kpi-value');
+  const subs = qsa('#page-orders .kpi-sub');
+  if (values[0]) values[0].textContent = String(open.length);
+  if (values[1]) values[1].textContent = String(closed.length);
+  if (values[2]) values[2].innerHTML = `${fmt.num(turnover, 2)}<span class="unit">USDT</span>`;
+  if (values[3]) values[3].textContent = '-';
+  if (values[4]) values[4].innerHTML = `${fmt.num(pnl, 2)}<span class="unit">USDT</span>`;
+  subs.forEach(s => { s.className = 'kpi-sub'; s.textContent = '来自 /api/orders'; });
+  const countLabel = qs('#page-orders table.tbl')?.nextElementSibling?.querySelector('span');
+  if (countLabel) countLabel.textContent = `共 ${orders.length} 条`;
+}
+
+function renderOrderDetail(order) {
+  const detailCard = qsa('#page-orders div[style*="grid-template-columns:1.6fr 1fr"] > .card')[1];
+  if (!detailCard) return;
+  if (!order) {
+    detailCard.innerHTML = '<div class="card-head"><div class="card-title">订单详情</div></div><div style="text-align:center;color:var(--text-3);padding:40px">暂无真实订单</div>';
+    return;
+  }
+  const st = (order.status || '').toUpperCase() || '-';
+  const side = orderSide(order) || '-';
+  detailCard.innerHTML = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
+      <div><div style="font-size:12px;color:var(--text-3);margin-bottom:4px">订单详情</div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:600;font-family:var(--mono)">#${escapeHtml(order.id || order.order_id || order.signal_id || '-')}</span><span class="tag">${escapeHtml(st)}</span></div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;margin-bottom:14px;font-size:12px">
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">交易对</div><div style="font-weight:500">${slashSymbol(order.symbol || '')}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">创建时间</div><div style="font-family:var(--mono)">${escapeHtml(order.timestamp || order.created_at || '-')}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">方向</div><div>${side}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">状态</div><div>${escapeHtml(st)}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">订单类型</div><div>${escapeHtml(order.type || order.order_type || 'paper')}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">数量</div><div style="font-family:var(--mono)">${orderQty(order) ?? '-'}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">开仓价</div><div style="font-family:var(--mono)">${fmt.price(orderPrice(order, 'entry_price', 'entry'), 2)}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">平仓价</div><div style="font-family:var(--mono)">${fmt.price(orderPrice(order, 'exit_price', 'exit'), 2)}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">盈亏</div><div style="font-family:var(--mono)">${fmt.num(order.pnl_usd ?? order.pnl_pct, 2)}</div></div>
+      <div><div style="color:var(--text-3);font-size:11px;margin-bottom:3px">来源</div><div>${escapeHtml(order.signal_id || order.reason || order.strategy || '-')}</div></div>
+    </div>
+    <div style="padding:10px;background:var(--surface-2);border-radius:8px;font-size:11.5px;color:var(--text-2);line-height:1.6">该面板只展示 /api/orders 返回字段；未返回的交易所回执、滑点和手续费不会用示例值补齐。</div>`;
+}
+
+function renderOrderDistribution() {
+  const card = qsa('#page-orders div[style*="grid-template-columns:1fr 1.5fr"] > .card')[0];
+  if (!card) return;
+  const orders = state.lastOrders || [];
+  const open = orders.filter(o => (o.status || '').toUpperCase() === 'OPEN').length;
+  const closed = orders.filter(o => (o.status || '').toUpperCase() === 'CLOSED').length;
+  card.innerHTML = `<div class="card-head"><div class="card-title">成交分布</div></div>
+    <div style="display:grid;gap:8px">
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span>OPEN</span><strong style="font-family:var(--mono)">${open}</strong></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span>CLOSED</span><strong style="font-family:var(--mono)">${closed}</strong></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span>TOTAL</span><strong style="font-family:var(--mono)">${orders.length}</strong></div>
+    </div>`;
+}
+
+function renderOrderAnomalies() {
+  const card = qsa('#page-orders div[style*="grid-template-columns:1fr 1.5fr"] > .card')[1];
+  if (!card) return;
+  const events = (state.lastEvents || []).filter(e => e.kind === 'error' || e.kind === 'risk' || (e.kind === 'order' && /fail|error|reject/i.test(e.message || e.detail || ''))).slice(0, 5);
+  card.innerHTML = `<div class="card-head"><div class="card-title">异常订单提醒</div></div>
+    <div style="display:flex;flex-direction:column;gap:1px;background:var(--border);border-radius:8px;overflow:hidden">
+      ${events.length ? events.map(e => `<div style="display:grid;grid-template-columns:120px 80px 1fr;gap:10px;padding:10px 12px;background:var(--surface);font-size:12px"><span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">${fmt.ts(e.timestamp)}</span><span style="font-weight:500">${escapeHtml(e.kind || '-')}</span><span style="color:var(--text-2)">${escapeHtml(e.message || e.detail || e.title || '')}</span></div>`).join('') : '<div style="padding:20px;text-align:center;color:var(--text-3);background:var(--surface)">暂无真实异常订单事件</div>'}
+    </div>`;
+}
+
+pageHooks.orders = function () {
+  if (!state.keysReady) return;
+  renderOrdersPage();
+};
 
 // ============== EVENTS PAGE ==============
 function renderDashRecentOrders(orders) {
@@ -820,6 +1108,67 @@ function renderEventsTimeline() {
     </div>`;
   }).join('');
 }
+
+function renderEventsTimeline() {
+  const container = $('evTimeline');
+  if (!container) return;
+  const events = (state.lastEvents || []).slice(0, 30);
+  renderEventsSummary(state.lastEvents || []);
+  renderEventDetail(events[0]);
+  if (!events.length) {
+    container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3);background:var(--surface)">暂无真实事件数据</div>';
+    return;
+  }
+  container.innerHTML = events.map(e => {
+    const kindColors = { order: 'var(--green)', error: 'var(--red)', signal: 'var(--purple)', agent: 'var(--blue)', risk: 'var(--amber)', heatmap: 'var(--orange)', llm_review: 'var(--purple)' };
+    const color = kindColors[e.kind] || 'var(--text-3)';
+    return `<div class="ev-row" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:var(--surface);cursor:pointer">
+      <div style="width:8px;height:8px;border-radius:50%;background:${color};margin-top:5px;flex-shrink:0"></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:500;margin-bottom:2px">${escapeHtml(e.title || e.kind || '')}</div>
+        <div style="font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.detail || e.message || '')}</div>
+      </div>
+      <div style="font-size:10.5px;color:var(--text-3);white-space:nowrap">${fmt.ts(e.timestamp)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderEventsSummary(events = state.lastEvents || []) {
+  const today = new Date().toDateString();
+  const todayCount = events.filter(e => e.timestamp && new Date(e.timestamp).toDateString() === today).length || events.length;
+  const alerts = events.filter(e => e.kind === 'error' || e.kind === 'risk').length;
+  const automated = events.length ? Math.round((events.filter(e => e.kind !== 'error').length / events.length) * 1000) / 10 : 0;
+  setText('evToday', todayCount);
+  setText('evAlert', alerts);
+  setText('evAuto', events.length ? `${automated}%` : '-');
+  const subs = qsa('#page-events .kpi-sub');
+  subs.forEach(s => { s.className = 'kpi-sub'; s.textContent = '来自 /api/events'; });
+  const countLabel = qs('#page-events #evTimeline')?.nextElementSibling?.querySelector('span');
+  if (countLabel) countLabel.textContent = `共 ${state.lastEvents.length} 条`;
+}
+
+function renderEventDetail(event) {
+  const card = $('eventDetailCard');
+  if (!card) return;
+  if (!event) {
+    card.innerHTML = '<div class="card-head"><div class="card-title">事件详情</div></div><div style="text-align:center;color:var(--text-3);padding:40px">暂无真实事件</div>';
+    return;
+  }
+  const context = event.data && typeof event.data === 'object' ? event.data : {};
+  const contextRows = Object.entries(context).slice(0, 10).map(([k, v]) => `<tr><td style="padding:5px 0;color:var(--text-3);width:35%">${escapeHtml(k)}</td><td style="padding:5px 0;font-family:var(--mono);word-break:break-all">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('');
+  card.innerHTML = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
+      <div><div style="font-size:12px;color:var(--text-3);margin-bottom:3px">事件详情</div><div style="font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px">${escapeHtml(event.title || event.kind || '-')} <span class="tag">${escapeHtml(event.kind || '-')}</span></div><div style="font-size:11.5px;color:var(--text-3);font-family:var(--mono);margin-top:4px">${escapeHtml(event.timestamp || '-')}</div></div>
+    </div>
+    <div style="padding:12px;background:var(--surface-2);border-radius:8px;border-left:3px solid var(--purple);margin-bottom:14px;font-size:12.5px;line-height:1.6;color:var(--text)">${escapeHtml(event.detail || event.message || '-')}</div>
+    <div style="margin-bottom:14px"><div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px;font-weight:500">结构化上下文</div><table style="width:100%;font-size:11.5px;border-collapse:collapse">${contextRows || '<tr><td style="padding:12px;color:var(--text-3)">该事件未返回额外上下文字段</td></tr>'}</table></div>
+    <div style="display:flex;justify-content:space-between;padding-top:10px;border-top:1px solid var(--border);font-size:10.5px;color:var(--text-3)"><span>来源: /api/events</span><span>事件ID: ${escapeHtml(event.id || event.event_id || '-')}</span></div>`;
+}
+
+pageHooks.events = function () {
+  if (!state.keysReady) return;
+  renderEventsTimeline();
+};
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
