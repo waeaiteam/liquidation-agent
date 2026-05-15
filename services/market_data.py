@@ -52,6 +52,32 @@ class BinanceMarketDataService:
             return self._fetch_bybit(symbol, interval, limit)
         raise MarketDataError(f"Exchange '{exchange}' is not implemented for real-time market data")
 
+    def list_binance_usdt_perpetual_symbols(self) -> list[dict[str, Any]]:
+        payload = self._get(self.BINANCE_BASE_URL, "/fapi/v1/exchangeInfo", {}, "Binance")
+        rows = payload.get("symbols") if isinstance(payload, dict) else []
+        result = []
+        if not isinstance(rows, list):
+            return result
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if row.get("contractType") != "PERPETUAL" or row.get("quoteAsset") != "USDT":
+                continue
+            if row.get("status") not in {None, "TRADING"}:
+                continue
+            symbol = _clean_symbol(row.get("symbol"))
+            if not symbol.endswith("USDT"):
+                continue
+            result.append({
+                "symbol": symbol,
+                "base_asset": row.get("baseAsset") or symbol[:-4],
+                "quote_asset": "USDT",
+                "display": f"{symbol[:-4]}/USDT",
+                "status": row.get("status") or "TRADING",
+            })
+        result.sort(key=lambda item: item["symbol"])
+        return result
+
     def _fetch_binance(self, symbol: str, interval: str, limit: int) -> dict[str, Any]:
         symbol = _clean_symbol(symbol)
         ticker = self._get(self.BINANCE_BASE_URL, "/fapi/v1/ticker/24hr", {"symbol": symbol}, "Binance")

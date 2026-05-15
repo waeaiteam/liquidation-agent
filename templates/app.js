@@ -19,6 +19,8 @@ const state = {
   xLastData: null,
   exchangeCredentials: { binance: {}, okx: {}, bybit: {} },
   grok: { apiKey: '', model: 'grok-4.3', baseUrl: 'https://api.x.ai/v1', systemPrompt: '' },
+  lastDiagnostics: null,
+  lastReplay: null,
 };
 
 function setText(id, value) {
@@ -38,6 +40,13 @@ function fullSymbol(symbol) {
 function slashSymbol(symbol) {
   const s = fullSymbol(symbol);
   return s.endsWith('USDT') ? s.replace('USDT', '/USDT') : (symbol || '-');
+}
+
+function normalizeUsdtSymbol(value) {
+  let raw = String(value || '').trim().toUpperCase().replace(/[\s_-]/g, '').replace('/', '');
+  if (!raw) return 'BTCUSDT';
+  if (!raw.endsWith('USDT')) raw += 'USDT';
+  return raw;
 }
 
 function signedPct(value) {
@@ -75,6 +84,9 @@ const fmt = {
     if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(d) + 'K';
     return n.toFixed(d);
   },
+  compact(v, d = 2) {
+    return this.num(v, d);
+  },
   pct(v, d = 2) { return v == null ? '—' : (+v).toFixed(d) + '%'; },
   price(v, d = 2) { return v == null ? '—' : (+v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); },
   ts(s) { if (!s) return '—'; try { return new Date(s).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch { return s; } },
@@ -86,7 +98,7 @@ function checkKeys() {
   const llm = ($('llmKey')?.value || '').trim();
   state.pk = pk;
   state.llmKey = llm;
-  state.keysReady = !!pk;
+  state.keysReady = !!pk || new URLSearchParams(location.search).get('debug_ready') === '1';
   updateEmptyStates();
   return state.keysReady;
 }
@@ -200,7 +212,11 @@ const pageHooks = {};
 function navTo(page) {
   qsa('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
   qsa('.page').forEach(el => el.classList.toggle('active', el.id === 'page-' + page));
+  if (location.hash !== '#' + page) {
+    history.replaceState(null, '', '#' + page);
+  }
   setTimeout(() => Object.values(state.charts).forEach(c => c && c.resize && c.resize()), 80);
+  if (page === 'settings') renderTrustSettings(state.lastStatus?.config || {});
   const hook = pageHooks[page]; if (hook) hook();
 }
 
@@ -213,6 +229,40 @@ function getChart(id) {
 }
 const AXIS = { axisLine: { lineStyle: { color: '#ebedf0' } }, axisLabel: { color: '#9ea2ab', fontSize: 10 }, splitLine: { lineStyle: { color: '#f5f5f5' } } };
 const TT = { backgroundColor: '#fff', borderColor: '#ebedf0', textStyle: { color: '#1a1a2e', fontSize: 11 } };
+
+function numericTime(value, fallbackIndex = 0) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value;
+  if (typeof value === 'string') {
+    const n = +value;
+    if (Number.isFinite(n)) return n < 1e12 ? n * 1000 : n;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now() + fallbackIndex * 60000;
+}
+
+function liqBandColor(side, alpha, valueRatio = 0) {
+  const a = Math.max(0.08, Math.min(0.95, alpha));
+  if (/short|above/i.test(side || '')) {
+    if (valueRatio > 0.72) {
+      const shade = Math.round(28 + (1 - valueRatio) * 70);
+      return `rgba(${shade},${shade + 12},${shade + 14},${a})`;
+    }
+    const g = Math.round(150 + 95 * valueRatio);
+    return `rgba(${Math.round(10 + 22 * valueRatio)},${g},${Math.round(205 + 45 * valueRatio)},${a})`;
+  }
+  if (valueRatio > 0.72) {
+    const shade = Math.round(70 + (1 - valueRatio) * 95);
+    return `rgba(${shade},${Math.round(shade * 0.12)},${Math.round(shade * 0.08)},${a})`;
+  }
+  const g = Math.round(90 + 135 * valueRatio);
+  return `rgba(255,${g},${Math.round(8 + 24 * valueRatio)},${a})`;
+}
+
+function liqPriceSide(price, current, fallback) {
+  if (current) return price >= current ? 'short' : 'long';
+  return fallback || 'unknown';
+}
 
 // ============== DESKTOP BRIDGE ==============
 async function loadDesktopKeys() {
@@ -271,15 +321,16 @@ function renderHeader(s) {
   const stopBtn = $('btnStop');
   if (startBtn) startBtn.style.display = running ? 'none' : '';
   if (stopBtn) stopBtn.style.display = running ? '' : 'none';
-  if (cfg.symbol && $('hdrSymbol')) $('hdrSymbol').value = cfg.symbol.replace('USDT', '/USDT');
+  if (cfg.symbol && $('hdrSymbol')) $('hdrSymbol').value = slashSymbol(cfg.symbol);
   if (cfg.exchange) syncExchangeSelectors(cfg.exchange, { includeCredential: false });
   if (cfg.interval && $('hdrInterval')) $('hdrInterval').value = String(cfg.interval).replace('h', 'H').replace('d', 'D').replace('w', 'W');
-  if (cfg.symbol && $('configSymbol')) $('configSymbol').value = cfg.symbol.replace('USDT', '/USDT');
+  if (cfg.symbol && $('configSymbol')) $('configSymbol').value = slashSymbol(cfg.symbol);
   if (cfg.exchange && $('configExchange')) $('configExchange').value = normalizeExchange(cfg.exchange);
+  renderTrustSettings(cfg);
 }
 
 function selectedHeaderSymbol() {
-  return (($('hdrSymbol')?.value || state.lastStatus?.config?.symbol || 'BTCUSDT').replace('/', '')).toUpperCase();
+  return normalizeUsdtSymbol($('hdrSymbol')?.value || state.lastStatus?.config?.symbol || 'BTCUSDT');
 }
 
 function selectedHeaderExchange() {
@@ -323,7 +374,7 @@ async function persistAgentExchange(exchange) {
 }
 
 function selectedHeatmapSymbol() {
-  return (($('hmSym')?.value || selectedHeaderSymbol()).replace('/', '')).toUpperCase();
+  return normalizeUsdtSymbol($('hmSym')?.value || selectedHeaderSymbol());
 }
 
 function selectedHeatmapExchange() {
@@ -426,10 +477,13 @@ async function pollStatus() {
     renderHeader(j);
     renderDashKpis(j);
     renderDashSignals(j);
+    renderDashCharts();
+    pageHooks.heatmap?.();
   } catch {}
 }
 
 async function refreshAgentData({ forceHeatmap = false } = {}) {
+  if (forceHeatmap) return refreshLiquidationMap();
   const pk = state.pk || ($('pk')?.value || '').trim();
   if (forceHeatmap && !pk) { toast('请先在设置中填写钱包私钥', 'err'); return; }
   const btn = forceHeatmap ? $('btnHmRefresh') : $('btnMarketRefresh');
@@ -485,6 +539,38 @@ async function refreshAgentData({ forceHeatmap = false } = {}) {
   }
 }
 
+async function refreshLiquidationMap() {
+  const pk = state.pk || ($('pk')?.value || '').trim();
+  if (!pk) { toast('请先在设置中填写钱包私钥', 'err'); return; }
+  const btn = $('btnHmRefresh');
+  const oldText = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = '生成中...'; }
+  try {
+    const result = await api('POST', '/api/liqmap', {
+      pk,
+      coin: selectedHeatmapSymbol().replace(/USDT$/, ''),
+      symbol: selectedHeatmapSymbol(),
+      exchange: selectedHeatmapExchange(),
+      interval: selectedHeatmapInterval(),
+      include_exchange_leverage: true,
+    });
+    state.lastStatus = result.status || await api('GET', '/api/agent/status');
+    renderHeader(state.lastStatus);
+    renderDashKpis(state.lastStatus);
+    renderDashSignals(state.lastStatus);
+    renderDashCharts();
+    pageHooks.heatmap?.();
+    await loadEvents();
+    if ($('hmLastUpdate')) $('hmLastUpdate').textContent = new Date().toLocaleString();
+    toast('已生成聚合清算地图', 'ok');
+    return result;
+  } catch (e) {
+    toast('生成聚合清算地图失败: ' + formatMarketError(e, selectedHeatmapExchange()), 'err', 5200);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  }
+}
+
 // ============== DASHBOARD KPIs ==============
 function renderDashKpis(s) {
   const cfg = s?.config || {};
@@ -514,6 +600,204 @@ function renderDashKpis(s) {
   if ($('kpiTotal')) {
     $('kpiTotal').innerHTML = (pnl >= 0 ? '+' : '') + fmt.price(pnl) + ' <span class="unit">USDT</span>';
     $('kpiTotal').style.color = pnl >= 0 ? 'var(--green-text)' : 'var(--red-text)';
+  }
+  renderAgentTrustPanel(s);
+}
+
+function ensureAgentTrustPanel() {
+  let panel = $('agentTrustPanel');
+  if (panel) return panel;
+  const home = $('page-home');
+  if (!home) return null;
+  panel = document.createElement('div');
+  panel.id = 'agentTrustPanel';
+  panel.className = 'card';
+  panel.style.margin = '0 0 16px';
+  const anchor = qs('.dash-mid', home) || home.children[1] || null;
+  home.insertBefore(panel, anchor);
+  return panel;
+}
+
+function reportLine(report) {
+  if (!report) return 'No report yet';
+  const score = report.opportunity_score || {};
+  const finalAction = report.final_action || {};
+  const blockers = (report.blockers || []).slice(0, 3).join(' | ');
+  return `${finalAction.action || 'WAIT'} · score ${Math.round(+score.score || 0)}/${score.threshold ?? 70}${blockers ? ' · ' + blockers : ''}`;
+}
+
+function heartbeatState(s) {
+  const hb = s?.heartbeat || {};
+  if (hb.stale) return { text: 'Loop may be stuck', color: 'var(--red-text)' };
+  if (s?.running) return { text: 'Running', color: 'var(--green-text)' };
+  if (hb.last_error) return { text: 'Error', color: 'var(--red-text)' };
+  return { text: 'Stopped', color: 'var(--text-3)' };
+}
+
+function renderAgentTrustPanel(s) {
+  const panel = ensureAgentTrustPanel();
+  if (!panel) return;
+  const hb = s?.heartbeat || {};
+  const report = s?.last_decision_report || null;
+  const score = report?.opportunity_score || {};
+  const checks = state.lastDiagnostics?.checks || s?.diagnostics_summary?.checks || [];
+  const diagSummary = state.lastDiagnostics?.overall || s?.diagnostics_summary?.overall || 'not_run';
+  const recentReports = state.lastReplay?.reports || [];
+  const recentDecision = reportLine(report);
+  const hbView = heartbeatState(s);
+  const nextTick = hb.next_due_at ? fmt.ts(hb.next_due_at) : '-';
+  const lastTick = hb.last_tick_at ? fmt.ts(hb.last_tick_at) : '-';
+  panel.innerHTML = `
+    <div class="card-head">
+      <div class="card-title">Agent Trust Panel</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="card-action" id="btnAgentDiagnostics">Health Check</button>
+        <button class="card-action" id="btnAgentReplay">Replay</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px">
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3)">Safety mode</div>
+        <div style="font-size:18px;font-weight:700;color:var(--text)">${escapeHtml(s?.safety_mode || s?.config?.safety_mode || 'paper')}</div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3)">Heartbeat</div>
+        <div style="font-size:18px;font-weight:700;color:${hbView.color}">${hbView.text}</div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3)">Ticks</div>
+        <div style="font-size:18px;font-weight:700;color:var(--text)">${hb.tick_count ?? s?.tick_count ?? 0}</div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3)">Next review</div>
+        <div style="font-size:18px;font-weight:700;color:var(--text)">${nextTick}</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Last decision · last tick ${lastTick} · errors ${hb.consecutive_errors || 0}</div>
+        <div style="font-weight:700;color:var(--text);margin-bottom:6px">${escapeHtml(recentDecision)}</div>
+        <div style="font-size:11px;color:var(--text-3)">market ${report?.market_check?.ok === false ? 'blocked' : 'ok'} · heatmap ${report?.heatmap_confirmation?.confirmed ? 'confirmed' : 'watch'} · risk ${report?.risk_gate?.approved ? 'approved' : 'blocked'} · threshold ${score.threshold ?? 70}</div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Diagnostics</div>
+        <div style="font-weight:700;color:${diagSummary === 'fail' ? 'var(--red-text)' : diagSummary === 'pass' ? 'var(--green-text)' : 'var(--text)'}">${escapeHtml(diagSummary)}</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:4px">${checks.slice(0, 3).map(c => `${c.status}:${c.name}`).join(' · ') || 'Not run'}</div>
+      </div>
+    </div>
+    <div id="agentReplayResult" style="margin-top:10px;font-size:11px;color:var(--text-3)">
+      ${recentReports.length ? recentReports.slice(-5).map(r => escapeHtml(reportLine(r))).join('<br>') : 'Replay output will appear here.'}
+    </div>`;
+  $('btnAgentDiagnostics')?.addEventListener('click', runAgentDiagnostics);
+  $('btnAgentReplay')?.addEventListener('click', runAgentReplay);
+}
+
+function ensureTrustSettingsPanel() {
+  let panel = $('agentTrustSettingsPanel');
+  if (panel) return panel;
+  const settings = $('page-settings');
+  const content = $('settingsContent') || (settings ? qs('.settings-content', settings) : null);
+  if (!content) return null;
+  panel = document.createElement('div');
+  panel.id = 'agentTrustSettingsPanel';
+  panel.className = 'card';
+  panel.setAttribute('data-settings-section', 'api');
+  panel.innerHTML = `
+    <div class="card-head">
+      <div class="card-title">Agent Safety & Reports</div>
+      <button class="card-action" id="btnSettingsDiagnostics">Run Health Check</button>
+    </div>
+    <div class="trust-settings-grid">
+      <label style="display:grid;gap:4px;color:var(--text-2)">Safety mode
+        <select id="safetyMode" class="hdr-select" style="width:100%">
+          <option value="observe">Observe</option>
+          <option value="paper">Paper</option>
+          <option value="confirm">Confirm</option>
+          <option value="live">Live blocked</option>
+        </select>
+      </label>
+      <label style="display:grid;gap:4px;color:var(--text-2)">Min opportunity score
+        <input id="minOpportunityScore" type="number" min="0" max="100" value="70" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);background:var(--surface-2)">
+      </label>
+      <label style="display:grid;gap:4px;color:var(--text-2)">Report retention
+        <input id="decisionReportRetention" type="number" min="10" max="1000" value="100" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);background:var(--surface-2)">
+      </label>
+      <label style="display:flex;gap:6px;align-items:center;color:var(--text-2);min-height:52px">
+        <input id="saveClawRawSamples" type="checkbox" style="accent-color:var(--purple)"> Save redacted Claw402 raw
+      </label>
+    </div>
+    <div id="settingsDiagnosticsResult" style="margin-top:10px;font-size:11px;color:var(--text-3)">Health check results will appear in the dashboard trust panel.</div>`;
+  const firstCard = qs('.card[data-settings-section="api"]', content);
+  content.insertBefore(panel, firstCard || content.firstChild);
+  $('btnSettingsDiagnostics')?.addEventListener('click', async () => {
+    await runAgentDiagnostics();
+    const out = $('settingsDiagnosticsResult');
+    if (out && state.lastDiagnostics) {
+      out.textContent = `${state.lastDiagnostics.overall}: ${(state.lastDiagnostics.checks || []).map(c => `${c.status} ${c.name}`).join(' | ')}`;
+    }
+  });
+  return panel;
+}
+
+function renderTrustSettings(cfg = {}) {
+  ensureTrustSettingsPanel();
+  if ($('safetyMode') && cfg.safety_mode) $('safetyMode').value = cfg.safety_mode;
+  if ($('configSafetyMode') && cfg.safety_mode) $('configSafetyMode').value = cfg.safety_mode;
+  if ($('minOpportunityScore') && cfg.min_opportunity_score != null) $('minOpportunityScore').value = cfg.min_opportunity_score;
+  if ($('decisionReportRetention') && cfg.decision_report_retention != null) $('decisionReportRetention').value = cfg.decision_report_retention;
+  if ($('saveClawRawSamples') && cfg.save_claw402_raw_samples != null) $('saveClawRawSamples').checked = !!cfg.save_claw402_raw_samples;
+}
+
+async function runAgentDiagnostics() {
+  const btn = $('btnAgentDiagnostics');
+  if (btn) btn.disabled = true;
+  try {
+    state.lastDiagnostics = await api('GET', '/api/agent/diagnostics');
+    renderAgentTrustPanel(state.lastStatus);
+    toast('Agent health check completed', state.lastDiagnostics.overall === 'fail' ? 'err' : 'ok');
+  } catch (e) {
+    toast('Health check failed: ' + e.message, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runAgentReplay() {
+  const btn = $('btnAgentReplay');
+  const out = $('agentReplayResult');
+  if (btn) btn.disabled = true;
+  if (out) out.textContent = 'Running replay...';
+  try {
+    const s = state.lastStatus || {};
+    const market = s.last_snapshot?.market || {};
+    const payload = {
+      klines: market.klines || [],
+      snapshots: s.last_snapshot ? [s.last_snapshot] : [],
+      config: { safety_mode: 'observe' },
+    };
+    state.lastReplay = await api('POST', '/api/agent/replay', payload);
+    renderAgentTrustPanel(state.lastStatus);
+    toast('Replay completed', 'ok');
+  } catch (e) {
+    if (out) out.textContent = 'Replay failed: ' + e.message;
+    toast('Replay failed: ' + e.message, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadBinanceSymbols() {
+  const list = $('binanceSymbolsList');
+  if (!list) return;
+  try {
+    const data = await api('GET', '/api/market/binance-symbols');
+    const symbols = data.symbols || [];
+    state.binanceSymbols = symbols;
+    if (symbols.length) {
+      list.innerHTML = symbols.map(item => `<option value="${escapeHtml(item.display || slashSymbol(item.symbol))}"></option>`).join('');
+    }
+  } catch {
+    state.binanceSymbols = [];
   }
 }
 
@@ -584,7 +868,9 @@ function renderHeatmapChart(chart, mode) {
   const latest = snapshots[0] || {};
   const normalized = latest.liq_map || {};
   const points = Array.isArray(normalized.points) ? normalized.points : [];
-  if (!points.length) {
+  const levelMap = Array.isArray(normalized.level_map) ? normalized.level_map : [];
+  const leveragePoints = Array.isArray(normalized.leverage_points) ? normalized.leverage_points : [];
+  if (!points.length && !levelMap.length) {
     chart.setOption({
       grid: { left: 50, right: 10, top: 10, bottom: 30 },
       xAxis: { type: 'category', data: [], show: false },
@@ -593,6 +879,10 @@ function renderHeatmapChart(chart, mode) {
       graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无清算地图数据', fontSize: 13, fill: '#9ea2ab', fontFamily: 'inherit' } }],
       backgroundColor: '#1a1a2e',
     }, true);
+    return;
+  }
+  if (points.length || leveragePoints.length) {
+    renderLiquidationMapCanvas(chart, latest, mode);
     return;
   }
   const prices = [...new Set(points.map(p => +p.price).filter(Number.isFinite))].sort((a, b) => a - b);
@@ -614,6 +904,575 @@ function renderHeatmapChart(chart, mode) {
   }, true);
 }
 
+function renderLiquidationLevelsCanvas(chart, snapshot, mode) {
+  const dom = chart?.getDom?.();
+  if (!dom) return;
+  dom.innerHTML = '';
+  dom.style.position = 'relative';
+  dom.style.background = '#fff';
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(300, dom.clientWidth || 900);
+  canvas.height = Math.max(220, dom.clientHeight || 380);
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.display = 'block';
+  dom.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const normalized = snapshot?.liq_map || {};
+  const levelMap = Array.isArray(normalized.level_map) ? normalized.level_map : [];
+  const priceAxis = (normalized.price_axis || []).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const currentPrice = +snapshot?.price || +state.lastStatus?.last_snapshot?.price || +state.lastStatus?.last_signal?.price || 0;
+  const maxValue = Math.max(+normalized.max_liq_value || +normalized.max_value || 0, ...levelMap.map(p => +p.value || 0), 1);
+  const times = normalized.time_axis || [];
+  const xMax = Math.max((times.length || 1) - 1, ...levelMap.map(p => +p.time_index || 0), 1);
+  const visualMarket = snapshot?.visual_market || {};
+  const market = visualMarket?.klines ? visualMarket : (state.lastStatus?.last_snapshot?.market || {});
+  const klines = Array.isArray(market.klines) ? market.klines.slice(-Math.max(220, Math.min(500, xMax + 1))) : [];
+  const visibleLevels = levelMap
+    .map(p => ({ price: +p.price, value: +p.value || 0 }))
+    .filter(p => Number.isFinite(p.price) && p.value > maxValue * 0.006);
+  const visiblePrices = visibleLevels.length ? visibleLevels.map(p => p.price) : priceAxis;
+  let pMin = visiblePrices.length ? Math.min(...visiblePrices) : Math.min(...levelMap.map(p => +p.price || currentPrice));
+  let pMax = visiblePrices.length ? Math.max(...visiblePrices) : Math.max(...levelMap.map(p => +p.price || currentPrice));
+  if (currentPrice) {
+    const span = Math.max(Math.abs(currentPrice - pMin), Math.abs(pMax - currentPrice), currentPrice * 0.018);
+    pMin = Math.min(pMin, currentPrice - span * 1.05);
+    pMax = Math.max(pMax, currentPrice + span * 1.05);
+  }
+  const pad = Math.max((pMax - pMin) * 0.045, currentPrice ? currentPrice * 0.0015 : 1);
+  const yMin = pMin - pad;
+  const yMax = pMax + pad;
+  const plot = { l: mode === 'mini' ? 8 : 18, r: mode === 'mini' ? 42 : 70, t: mode === 'mini' ? 10 : 18, b: mode === 'mini' ? 14 : 28 };
+  const w = canvas.width - plot.l - plot.r;
+  const h = canvas.height - plot.t - plot.b;
+  const x = idx => plot.l + (+idx / xMax) * w;
+  const y = price => plot.t + (1 - ((+price - yMin) / Math.max(yMax - yMin, 1))) * h;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const priceSlot = priceAxis.length > 1 ? Math.abs(y(priceAxis[0]) - y(priceAxis[1])) : Math.max(2, h / 120);
+  const cellW = Math.max(1.6, w / Math.max(xMax, 1) * 1.08);
+  const rowsByPrice = new Map();
+  levelMap.forEach(item => {
+    const value = +item.value || 0;
+    const price = +item.price;
+    const timeIndex = +item.time_index || 0;
+    if (!value || !Number.isFinite(price)) return;
+    const key = Number.isFinite(+item.price_index) ? +item.price_index : price;
+    if (!rowsByPrice.has(key)) rowsByPrice.set(key, []);
+    rowsByPrice.get(key).push({ ...item, value, price, timeIndex });
+  });
+  const drawSegment = (start, end, price, value, side) => {
+    const ratio = Math.max(0, Math.min(1, Math.pow(value / maxValue, 0.42)));
+    const cy = y(price);
+    const startX = x(start) - cellW * 0.5;
+    const endX = x(end) + cellW * 0.5;
+    const width = Math.max(1.6, endX - startX);
+    const sideName = liqPriceSide(price, currentPrice, side);
+    const bandH = Math.max(0.45, Math.min(2.1, priceSlot * (0.12 + ratio * 0.2)));
+    if (ratio > 0.58) {
+      ctx.fillStyle = /short/i.test(sideName) ? `rgba(16,22,24,${0.16 + ratio * 0.34})` : `rgba(86,18,9,${0.12 + ratio * 0.32})`;
+      ctx.fillRect(startX, cy - Math.max(1.2, bandH * 1.6), width, Math.max(2.2, bandH * 3.2));
+    }
+    ctx.fillStyle = liqBandColor(sideName, 0.05 + ratio * 0.72, ratio);
+    ctx.fillRect(startX, cy - bandH / 2, width, bandH);
+    if (ratio > 0.42) {
+      ctx.fillStyle = /short/i.test(sideName) ? `rgba(26,255,244,${0.18 + ratio * 0.26})` : `rgba(255,232,38,${0.14 + ratio * 0.24})`;
+      ctx.fillRect(startX, cy - 0.45, width, 0.9);
+    }
+  };
+  rowsByPrice.forEach(items => {
+    items.sort((a, b) => a.timeIndex - b.timeIndex);
+    let segment = null;
+    items.forEach(item => {
+      if (!segment) {
+        segment = { start: item.timeIndex, end: item.timeIndex, maxValue: item.value, sumValue: item.value, price: item.price, side: item.side };
+        return;
+      }
+      if (item.timeIndex <= segment.end + 1) {
+        segment.end = item.timeIndex;
+        segment.maxValue = Math.max(segment.maxValue, item.value);
+        segment.sumValue += item.value;
+      } else {
+        drawSegment(segment.start, segment.end, segment.price, segment.maxValue, segment.side);
+        segment = { start: item.timeIndex, end: item.timeIndex, maxValue: item.value, sumValue: item.value, price: item.price, side: item.side };
+      }
+    });
+    if (segment) drawSegment(segment.start, segment.end, segment.price, segment.maxValue, segment.side);
+  });
+
+  if (klines.length) {
+    ctx.lineWidth = 0.75;
+    klines.forEach((k, i) => {
+      const cx = plot.l + (i / Math.max(klines.length - 1, 1)) * w;
+      const open = +k.open || +k.close;
+      const close = +k.close || open;
+      const high = +k.high || Math.max(open, close);
+      const low = +k.low || Math.min(open, close);
+      const up = close >= open;
+      ctx.strokeStyle = up ? 'rgba(38,166,154,.46)' : 'rgba(239,83,80,.46)';
+      ctx.fillStyle = up ? 'rgba(38,166,154,.18)' : 'rgba(239,83,80,.18)';
+      ctx.beginPath();
+      ctx.moveTo(cx, y(low));
+      ctx.lineTo(cx, y(high));
+      ctx.stroke();
+      const bodyY = Math.min(y(open), y(close));
+      const bodyH = Math.max(1, Math.abs(y(open) - y(close)));
+      ctx.fillRect(cx - 1, bodyY, 2, bodyH);
+    });
+  }
+
+  const profile = new Map();
+  levelMap.forEach(item => {
+    const price = +item.price, value = +item.value || 0;
+    if (Number.isFinite(price) && value > 0) profile.set(price, (profile.get(price) || 0) + value);
+  });
+  const maxProfile = Math.max(...profile.values(), 1);
+  profile.forEach((value, price) => {
+    const ratio = value / maxProfile;
+    ctx.fillStyle = liqBandColor(liqPriceSide(price, currentPrice), 0.14 + ratio * 0.72, ratio);
+    ctx.fillRect(plot.l + w + 7, y(price) - Math.max(0.8, priceSlot * 0.22), ratio * (plot.r - 18), Math.max(1, priceSlot * 0.42));
+  });
+
+  levelMap.filter(item => (+item.value || 0) >= maxValue * 0.72).slice(-120).forEach(item => {
+    const price = +item.price, value = +item.value || 0;
+    const ratio = value / maxValue;
+    ctx.beginPath();
+    ctx.arc(x(+item.time_index || 0), y(price), Math.max(2.2, Math.min(15, Math.sqrt(ratio) * 15)), 0, Math.PI * 2);
+    ctx.fillStyle = liqBandColor(liqPriceSide(price, currentPrice, item.side), 0.12, ratio);
+    ctx.strokeStyle = /short/i.test(liqPriceSide(price, currentPrice, item.side)) ? '#20e7e0' : '#ff7a45';
+    ctx.lineWidth = 0.9;
+    ctx.fill();
+    ctx.stroke();
+  });
+
+  if (currentPrice) {
+    const cy = y(currentPrice);
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = '#ff4d6d';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, cy);
+    ctx.lineTo(canvas.width - plot.r + 8, cy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ff3366';
+    ctx.fillRect(canvas.width - plot.r + 8, cy - 13, plot.r - 10, 26);
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(fmt.price(currentPrice, 1), canvas.width - plot.r + 12, cy + 4);
+  }
+
+  ctx.fillStyle = '#111827';
+  ctx.font = '10px sans-serif';
+  const ticks = 6;
+  for (let i = 0; i <= ticks; i++) {
+    const price = yMin + (i / ticks) * (yMax - yMin);
+    ctx.fillText(Number(price).toLocaleString(undefined, { maximumFractionDigits: 0 }), canvas.width - plot.r + 8, y(price) + 3);
+  }
+}
+
+function renderLiquidationMapCanvas(chart, snapshot, mode) {
+  const dom = chart?.getDom?.();
+  if (!dom) return;
+  dom.innerHTML = '';
+  dom.style.position = 'relative';
+  dom.style.background = '#fff';
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(320, dom.clientWidth || 1100);
+  canvas.height = Math.max(220, dom.clientHeight || 520);
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.display = 'block';
+  dom.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const normalized = snapshot?.liq_map || {};
+  const aggregatePoints = Array.isArray(normalized.points) ? normalized.points : [];
+  const leveragePoints = Array.isArray(normalized.leverage_points) ? normalized.leverage_points : [];
+  const axisValues = [
+    ...(Array.isArray(normalized.price_axis) ? normalized.price_axis : []),
+    ...(Array.isArray(normalized.leverage_price_axis) ? normalized.leverage_price_axis : []),
+  ].map(Number).filter(Number.isFinite);
+  const currentPrice = +normalized.leverage_last_price || +snapshot?.price || +state.lastStatus?.last_snapshot?.price || 0;
+  const selectedLev = $('hmLev')?.value || 'all';
+  const aggregateByPrice = new Map();
+  aggregatePoints.forEach(p => {
+    const price = +p.price;
+    const value = +(p.value ?? p.intensity ?? 0);
+    if (!Number.isFinite(price) || !Number.isFinite(value) || value <= 0) return;
+    aggregateByPrice.set(price, (aggregateByPrice.get(price) || 0) + value);
+  });
+  const priceAxis = [...new Set([
+    ...axisValues,
+    ...aggregateByPrice.keys(),
+    ...leveragePoints.map(p => +p.price).filter(Number.isFinite),
+    ...(currentPrice ? [currentPrice] : []),
+  ])].filter(Number.isFinite).sort((a, b) => a - b);
+  if (!priceAxis.length || (!aggregateByPrice.size && !leveragePoints.length)) return;
+
+  const minPrice = Math.min(...priceAxis);
+  const maxPrice = Math.max(...priceAxis);
+  const plot = { l: mode === 'mini' ? 10 : 34, r: mode === 'mini' ? 26 : 46, t: mode === 'mini' ? 16 : 34, b: mode === 'mini' ? 22 : 58 };
+  const w = canvas.width - plot.l - plot.r;
+  const h = canvas.height - plot.t - plot.b;
+  const x = price => plot.l + ((price - minPrice) / Math.max(maxPrice - minPrice, 1)) * w;
+  const barBase = plot.t + h;
+  const curveTop = plot.t + h * 0.04;
+  const curveBottom = plot.t + h * 0.68;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.strokeStyle = 'rgba(148,163,184,.22)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  for (let i = 0; i <= 5; i++) {
+    const yy = plot.t + (i / 5) * h * 0.72;
+    ctx.beginPath();
+    ctx.moveTo(plot.l, yy);
+    ctx.lineTo(plot.l + w, yy);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  const leverageOrder = ['x5', 'x10', 'x25', 'x50', 'x100'];
+  const leverageColors = { x5: '#8bd3f7', x10: '#78a7ff', x25: '#5f7dff', x50: '#ffc400', x100: '#ff7a2f' };
+  const byPrice = new Map();
+  let bucketedLeverageCount = 0;
+  leveragePoints.forEach(p => {
+    const price = +p.price;
+    const value = +(p.value ?? p.intensity ?? 0);
+    const key = p.leverage_bucket || leverageBucketFromSeries(p.leverage || p.series || p.series_label || p.side);
+    if (!Number.isFinite(price) || !Number.isFinite(value) || value <= 0 || !key) return;
+    if (selectedLev !== 'all' && key !== selectedLev) return;
+    if (!byPrice.has(price)) byPrice.set(price, {});
+    const row = byPrice.get(price);
+    row[key] = (row[key] || 0) + value;
+    bucketedLeverageCount += 1;
+  });
+  const hasLeverageBars = bucketedLeverageCount > 0;
+  const bars = hasLeverageBars
+    ? [...byPrice.entries()].map(([price, row]) => {
+        const total = leverageOrder.reduce((sum, key) => sum + (row[key] || 0), 0);
+        return { price, row, total };
+      }).filter(item => item.total > 0).sort((a, b) => a.price - b.price)
+    : (selectedLev === 'all'
+      ? [...aggregateByPrice.entries()].map(([price, total]) => ({ price, row: { aggregate: total }, total })).filter(item => item.total > 0).sort((a, b) => a.price - b.price)
+      : []);
+  const maxBar = Math.max(...bars.map(b => b.total), 1);
+  const barW = Math.max(1, Math.min(5, w / Math.max(priceAxis.length, 1) * 2.2));
+  const barMaxH = h * 0.62;
+  bars.forEach(item => {
+    let y0 = barBase;
+    if (!hasLeverageBars) {
+      const bh = Math.max(1, (item.total / maxBar) * barMaxH);
+      ctx.fillStyle = 'rgba(100,116,139,.34)';
+      ctx.fillRect(x(item.price) - barW / 2, y0 - bh, barW, bh);
+      return;
+    }
+    leverageOrder.forEach(key => {
+      const value = item.row[key] || 0;
+      if (!value) return;
+      const bh = Math.max(1, (value / maxBar) * barMaxH);
+      ctx.fillStyle = leverageColors[key];
+      ctx.fillRect(x(item.price) - barW / 2, y0 - bh, barW, bh);
+      y0 -= bh;
+    });
+  });
+
+  const cumulativeByPrice = aggregateByPrice.size ? aggregateByPrice : new Map(bars.map(item => [item.price, item.total]));
+  const cumulativeLong = [];
+  const cumulativeShort = [];
+  let leftSum = 0;
+  priceAxis.forEach(price => {
+    if (price < currentPrice) leftSum += cumulativeByPrice.get(price) || 0;
+    cumulativeLong.push({ price, value: leftSum });
+  });
+  let rightSum = 0;
+  [...priceAxis].reverse().forEach(price => {
+    if (price > currentPrice) rightSum += cumulativeByPrice.get(price) || 0;
+    cumulativeShort.push({ price, value: rightSum });
+  });
+  cumulativeShort.reverse();
+  const maxCum = Math.max(...cumulativeLong.map(p => p.value), ...cumulativeShort.map(p => p.value), 1);
+  const cy = value => curveBottom - (value / maxCum) * (curveBottom - curveTop);
+
+  function drawCurve(data, stroke, fill, side) {
+    if (!data.length) return;
+    ctx.beginPath();
+    data.forEach((p, i) => {
+      const px = x(p.price), py = cy(p.value);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.lineTo(x(data[data.length - 1].price), barBase);
+    ctx.lineTo(x(data[0].price), barBase);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+  drawCurve(cumulativeShort, '#ff3347', 'rgba(255,51,71,.075)', 'short');
+  drawCurve(cumulativeLong, '#18b59d', 'rgba(24,181,157,.075)', 'long');
+
+  if (currentPrice) {
+    const cx = x(currentPrice);
+    ctx.setLineDash([8, 5]);
+    ctx.strokeStyle = '#ff263d';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, plot.t + 4);
+    ctx.lineTo(cx, barBase);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ff263d';
+    ctx.beginPath();
+    ctx.moveTo(cx, plot.t + 2);
+    ctx.lineTo(cx - 6, plot.t + 16);
+    ctx.lineTo(cx + 6, plot.t + 16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#333';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`当前价格:${fmt.price(currentPrice, 0)}`, cx, plot.t - 4);
+  }
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#111827';
+  ctx.font = '11px sans-serif';
+  const tickCount = mode === 'mini' ? 5 : 14;
+  for (let i = 0; i <= tickCount; i++) {
+    const price = minPrice + (i / tickCount) * (maxPrice - minPrice);
+    ctx.fillText(fmt.price(price, 0), x(price), canvas.height - 18);
+  }
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#111827';
+  ctx.font = '12px sans-serif';
+  ctx.fillText(fmt.compact(maxCum), 6, curveTop + 6);
+  ctx.fillText('0', 8, barBase + 4);
+  ctx.textAlign = 'right';
+  ctx.fillText(fmt.compact(maxBar), canvas.width - 8, curveTop + 6);
+
+  if (mode !== 'mini') {
+    const labels = [
+      ['#18b59d', '累计空单清算强度'],
+      ['#ff3347', '累计多单清算强度'],
+      ...(hasLeverageBars ? [
+        ['#8bd3f7', '5x 杠杆'],
+        ['#78a7ff', '10x 杠杆'],
+        ['#5f7dff', '25x 杠杆'],
+        ['#ffc400', '50x 杠杆'],
+        ['#ff7a2f', '100x 杠杆'],
+      ] : [[
+        '#64748b',
+        selectedLev === 'all' ? '聚合清算总量' : '所选杠杆暂无数据',
+      ]]),
+    ];
+    const legendLeft = Math.max(4, plot.l);
+    const legendRight = canvas.width - Math.max(8, plot.r);
+    let lx = legendLeft;
+    let ly = 12;
+    labels.forEach(([color, label]) => {
+      const labelWidth = 10 + 14 + ctx.measureText(label).width + 20;
+      if (lx > legendLeft && lx + labelWidth > legendRight) {
+        lx = legendLeft;
+        ly += 18;
+      }
+      ctx.fillStyle = color;
+      ctx.fillRect(lx, ly, 10, 10);
+      ctx.fillStyle = '#374151';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, lx + 14, ly + 9);
+      lx += ctx.measureText(label).width + 34;
+    });
+  }
+}
+
+function renderLiquidationLevelsChart(chart, snapshot, mode) {
+  const normalized = snapshot?.liq_map || {};
+  const levelMap = Array.isArray(normalized.level_map) ? normalized.level_map : [];
+  const priceAxis = (normalized.price_axis || []).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const maxValue = Math.max(+normalized.max_liq_value || +normalized.max_value || 0, ...levelMap.map(p => +p.value || 0), 1);
+  const market = state.lastStatus?.last_snapshot?.market || {};
+  const klines = Array.isArray(market.klines) ? market.klines.slice(-220) : [];
+  const currentPrice = +snapshot?.price || +state.lastStatus?.last_snapshot?.price || +state.lastStatus?.last_signal?.price || 0;
+  const times = normalized.time_axis || [];
+  const hasTimes = times.length > 1;
+  const xMax = Math.max(hasTimes ? times.length - 1 : 1, ...levelMap.map(p => +p.time_index || 0));
+  const priceMin = priceAxis.length ? Math.min(...priceAxis) : Math.min(...levelMap.map(p => +p.price || currentPrice));
+  const priceMax = priceAxis.length ? Math.max(...priceAxis) : Math.max(...levelMap.map(p => +p.price || currentPrice));
+  const pad = Math.max((priceMax - priceMin) * 0.08, currentPrice ? currentPrice * 0.003 : 1);
+  const yMin = Math.floor(priceMin - pad);
+  const yMax = Math.ceil(priceMax + pad);
+  const ySlot = priceAxis.length > 1 ? Math.abs(priceAxis[1] - priceAxis[0]) : Math.max((yMax - yMin) / 80, 1);
+  const xStep = hasTimes ? 1 : Math.max(1, Math.ceil(xMax / 120));
+
+  const grouped = new Map();
+  levelMap.forEach(item => {
+    const value = +item.value || 0;
+    const price = +item.price;
+    const x = +item.time_index || 0;
+    if (!value || !Number.isFinite(price)) return;
+    const ratio = Math.log1p(value) / Math.log1p(maxValue);
+    const key = `${item.price_index}:${Math.floor(x / xStep)}`;
+    const prev = grouped.get(key);
+    if (!prev || value > prev.value) grouped.set(key, { x, price, value, ratio, side: liqPriceSide(price, currentPrice, item.side) });
+  });
+
+  const bandsByPrice = new Map();
+  [...grouped.values()].forEach(item => {
+    const key = item.price;
+    if (!bandsByPrice.has(key)) bandsByPrice.set(key, []);
+    bandsByPrice.get(key).push(item);
+  });
+  const bandData = [];
+  bandsByPrice.forEach(items => {
+    items.sort((a, b) => a.x - b.x);
+    let segment = null;
+    items.forEach(item => {
+      if (!segment) {
+        segment = { start: item.x, end: item.x, price: item.price, value: item.value, ratio: item.ratio, side: item.side };
+        return;
+      }
+      if (item.x <= segment.end + xStep) {
+        segment.end = item.x;
+        if (item.value > segment.value) {
+          segment.value = item.value;
+          segment.ratio = item.ratio;
+        }
+      } else {
+        bandData.push([segment.start, segment.end, segment.price, segment.value, segment.side, segment.ratio]);
+        segment = { start: item.x, end: item.x, price: item.price, value: item.value, ratio: item.ratio, side: item.side };
+      }
+    });
+    if (segment) bandData.push([segment.start, segment.end, segment.price, segment.value, segment.side, segment.ratio]);
+  });
+
+  const profile = new Map();
+  levelMap.forEach(item => {
+    const price = +item.price;
+    const value = +item.value || 0;
+    if (Number.isFinite(price) && value > 0) profile.set(price, (profile.get(price) || 0) + value);
+  });
+  const maxProfile = Math.max(...profile.values(), 1);
+  const profileData = [...profile.entries()].map(([price, value]) => [xMax + 2.4, price, value, liqPriceSide(price, currentPrice), value / maxProfile]);
+
+  const bubbleData = levelMap
+    .filter(item => (+item.value || 0) >= maxValue * 0.55)
+    .slice(-90)
+    .map(item => [+item.time_index || 0, +item.price, +item.value || 0, liqPriceSide(+item.price, currentPrice, item.side)]);
+
+  const candleData = klines.map((k, idx) => {
+    const t = hasTimes && klines.length > 1 ? (idx / Math.max(klines.length - 1, 1)) * xMax : idx;
+    return [t, +k.open || +k.close || currentPrice, +k.close || currentPrice, +k.low || +k.close || currentPrice, +k.high || +k.close || currentPrice];
+  }).filter(row => row.slice(1).every(Number.isFinite));
+
+  const xFormatter = value => {
+    const idx = Math.max(0, Math.min(times.length - 1, Math.round(+value || 0)));
+    const raw = times[idx];
+    if (raw == null) return '';
+    const d = new Date(numericTime(raw, idx));
+    return mode === 'mini' ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+
+  chart.setOption({
+    animation: false,
+    backgroundColor: '#fff',
+    grid: { left: mode === 'mini' ? 18 : 44, right: mode === 'mini' ? 34 : 58, top: 12, bottom: mode === 'mini' ? 18 : 34 },
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: '#fff',
+      borderColor: '#e5e7eb',
+      textStyle: { color: '#111827', fontSize: 11 },
+      formatter(params) {
+        if (params.seriesName === 'Large liquidation') return `${fmt.price(params.value[1], 1)}<br>${fmt.num(params.value[2], 2)}`;
+        if (params.seriesName === 'Price') return `O ${fmt.price(params.value[1], 1)} C ${fmt.price(params.value[2], 1)}<br>L ${fmt.price(params.value[3], 1)} H ${fmt.price(params.value[4], 1)}`;
+        return '';
+      },
+    },
+    xAxis: {
+      type: 'value',
+      min: 0,
+      max: xMax + Math.max(5, xMax * 0.08),
+      splitLine: { show: false },
+      axisLine: { lineStyle: { color: '#e5e7eb' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#111827', fontSize: 10, formatter: xFormatter },
+    },
+    yAxis: {
+      type: 'value',
+      position: 'right',
+      min: yMin,
+      max: yMax,
+      splitLine: { show: false },
+      axisLine: { lineStyle: { color: '#e5e7eb' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#111827', fontSize: 10, formatter: v => Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 }) },
+    },
+    dataZoom: mode === 'mini' ? [] : [{ type: 'inside', xAxisIndex: 0 }, { type: 'inside', yAxisIndex: 0 }],
+    series: [
+      {
+        name: 'Liquidation levels',
+        type: 'custom',
+        data: bandData,
+        renderItem(params, api) {
+          const start = api.coord([api.value(0), api.value(2)]);
+          const end = api.coord([api.value(1) + xStep, api.value(2)]);
+          const ratio = api.value(5);
+          const height = Math.max(1.2, Math.min(8, ySlot * 0.05 + 2 + ratio * 3));
+          return {
+            type: 'rect',
+            shape: { x: start[0], y: start[1] - height / 2, width: Math.max(2, end[0] - start[0]), height },
+            style: { fill: liqBandColor(api.value(4), 0.14 + ratio * 0.74, ratio) },
+          };
+        },
+        silent: true,
+      },
+      {
+        name: 'Right profile',
+        type: 'scatter',
+        data: profileData,
+        symbol: 'rect',
+        symbolSize: value => [Math.max(4, value[4] * 54), Math.max(2, Math.min(7, ySlot * 0.05 + 2))],
+        itemStyle: { color: params => liqBandColor(params.value[3], 0.18 + params.value[4] * 0.62, params.value[4]) },
+        silent: true,
+      },
+      {
+        name: 'Price',
+        type: 'candlestick',
+        data: candleData,
+        itemStyle: { color: 'rgba(39,174,96,.35)', color0: 'rgba(231,76,60,.35)', borderColor: 'rgba(39,174,96,.75)', borderColor0: 'rgba(231,76,60,.75)' },
+        barWidth: mode === 'mini' ? 2 : 3,
+        silent: true,
+      },
+      {
+        name: 'Large liquidation',
+        type: 'scatter',
+        data: bubbleData,
+        symbolSize: value => Math.max(4, Math.min(26, Math.sqrt((+value[2] || 0) / maxValue) * 32)),
+        itemStyle: {
+          color: params => liqBandColor(params.value[3], 0.22, (+params.value[2] || 0) / maxValue),
+          borderColor: params => /short/i.test(params.value[3]) ? '#21e8e1' : '#ff7a45',
+          borderWidth: 1,
+        },
+      },
+      ...(currentPrice ? [{
+        name: 'Current price',
+        type: 'line',
+        data: [[0, currentPrice], [xMax + 2, currentPrice]],
+        symbol: 'none',
+        lineStyle: { color: '#ff4d6d', width: 1, type: 'dashed' },
+        markPoint: mode === 'mini' ? undefined : { symbol: 'rect', symbolSize: [54, 28], label: { color: '#fff', formatter: fmt.price(currentPrice, 1), fontSize: 10 }, itemStyle: { color: '#ff3366' }, data: [{ coord: [xMax + 2, currentPrice] }] },
+      }] : []),
+    ],
+  }, true);
+}
+
 pageHooks.heatmap = function () {
   if (!state.keysReady) return;
   const chart = getChart('hmDetailChart');
@@ -624,11 +1483,18 @@ pageHooks.heatmap = function () {
   renderHeatmapHistory();
   const corrChart = getChart('hmCorrChart');
   if (corrChart) {
-    const lastPrice = state.lastStatus?.last_snapshot?.price || state.lastStatus?.last_signal?.price;
-    if (lastPrice) {
-      const now = Date.now();
-      const priceData = [[now, +lastPrice]];
-      const densityData = [[now, 0]];
+    const snapshots = state.lastStatus?.heatmap?.snapshots || [];
+    const rows = snapshots
+      .slice(0, 60)
+      .map(snap => {
+        const ts = Date.parse(snap.timestamp) || (+snap.epoch ? +snap.epoch * 1000 : Date.now());
+        const price = heatmapCurrentPrice(snap);
+        const density = heatmapStrengthRows(snap).reduce((sum, p) => sum + p.value, 0);
+        return { ts, price, density };
+      })
+      .filter(row => Number.isFinite(row.ts) && row.price > 0 && row.density > 0)
+      .sort((a, b) => a.ts - b.ts);
+    if (rows.length) {
       corrChart.setOption({
         grid: { left: 50, right: 50, top: 10, bottom: 28 },
         tooltip: { trigger: 'axis', ...TT },
@@ -636,8 +1502,8 @@ pageHooks.heatmap = function () {
         yAxis: [{ type: 'value', ...AXIS, name: '' }, { type: 'value', ...AXIS, name: '' }],
         graphic: [],
         series: [
-          { type: 'line', smooth: true, showSymbol: true, data: priceData, lineStyle: { color: '#6c5ce7', width: 2 } },
-          { type: 'bar', yAxisIndex: 1, data: densityData, itemStyle: { color: 'rgba(0,184,148,.4)' }, barWidth: '60%' },
+          { type: 'line', smooth: true, showSymbol: rows.length < 8, data: rows.map(r => [r.ts, r.price]), lineStyle: { color: '#6c5ce7', width: 2 } },
+          { type: 'bar', yAxisIndex: 1, data: rows.map(r => [r.ts, r.density]), itemStyle: { color: 'rgba(0,184,148,.4)' }, barWidth: '60%' },
         ],
       }, true);
     } else {
@@ -652,9 +1518,50 @@ pageHooks.heatmap = function () {
   }
 };
 
+function leverageBucketFromSeries(series) {
+  const s = String(series || '').toLowerCase();
+  const match = s.match(/(?:x\s*)?(\d{1,3})(?:\s*x)?/);
+  if (!match) return '';
+  const leverage = Number(match[1]);
+  if (!Number.isFinite(leverage) || leverage <= 0) return '';
+  if (leverage <= 5) return 'x5';
+  if (leverage <= 10) return 'x10';
+  if (leverage <= 25) return 'x25';
+  if (leverage <= 50) return 'x50';
+  if (leverage <= 125) return 'x100';
+  return '';
+}
+
 function heatmapClustersFromSnapshot(snapshot) {
   const direct = snapshot?.heatmap?.clusters || [];
   if (Array.isArray(direct) && direct.length) return direct;
+  const levelMap = snapshot?.liq_map?.level_map || [];
+  if (Array.isArray(levelMap) && levelMap.length) {
+    const current = +snapshot?.price || +state.lastStatus?.last_snapshot?.price || 0;
+    const maxValue = +(snapshot?.liq_map?.max_liq_value || snapshot?.liq_map?.max_value || 1);
+    const grouped = new Map();
+    levelMap.forEach(item => {
+      const price = +item.price;
+      const value = +item.value || 0;
+      if (!Number.isFinite(price) || value <= 0) return;
+      const span = Math.max(price * 0.001, 1);
+      const key = Math.round(price / span);
+      const prev = grouped.get(key) || { price, value: 0 };
+      prev.value += value;
+      grouped.set(key, prev);
+    });
+    return [...grouped.values()].sort((a, b) => b.value - a.value).slice(0, 12).map(p => {
+      const span = Math.max(p.price * 0.001, 1);
+      return {
+        low: p.price - span,
+        high: p.price + span,
+        score: p.value / Math.max(maxValue, 1),
+        volume: p.value,
+        side: current && p.price >= current ? 'above' : current ? 'below' : 'near',
+        leverage_tier: p.value >= maxValue * 0.7 ? 'high' : p.value >= maxValue * 0.35 ? 'medium' : 'low',
+      };
+    });
+  }
   const points = snapshot?.liq_map?.points || [];
   if (!Array.isArray(points) || !points.length) return [];
   return points
@@ -675,22 +1582,67 @@ function heatmapClustersFromSnapshot(snapshot) {
     });
 }
 
+function heatmapStrengthRows(snapshot) {
+  const normalized = snapshot?.liq_map || {};
+  const levPoints = Array.isArray(normalized.leverage_points) ? normalized.leverage_points : [];
+  const selectedLev = $('hmLev')?.value || 'all';
+  const points = levPoints.length ? levPoints : (Array.isArray(normalized.points) ? normalized.points : []);
+  return points
+    .map(p => ({
+      price: +p.price,
+      value: +(p.value ?? p.intensity ?? 0),
+      series: String(p.series || p.series_label || p.side || '').toLowerCase(),
+      bucket: p.leverage_bucket || leverageBucketFromSeries(p.leverage || p.series || p.series_label || p.side),
+    }))
+    .filter(p => selectedLev === 'all' || p.bucket === selectedLev)
+    .filter(p => Number.isFinite(p.price) && Number.isFinite(p.value) && p.value > 0);
+}
+
+function heatmapCurrentPrice(snapshot) {
+  return +snapshot?.liq_map?.leverage_last_price || +snapshot?.price || +state.lastStatus?.last_snapshot?.price || +state.lastStatus?.last_signal?.price || 0;
+}
+
+function sideLabel(side) {
+  if (side === 'above') return '空头清算';
+  if (side === 'below') return '多头清算';
+  return '现价附近';
+}
+
 function renderHeatmapSummary() {
   const snapshot = latestHeatmapSnapshot();
-  const subtitle = qs('#page-heatmap .card-title span');
-  if (subtitle) subtitle.textContent = `(${slashSymbol(selectedHeatmapSymbol())} · ${selectedHeatmapInterval()} · ${exchangeLabel(selectedHeatmapExchange())} · ${$('hmLev')?.value || '25x'})`;
-  const points = Array.isArray(snapshot?.liq_map?.points) ? snapshot.liq_map.points : [];
+  const subtitle = $('hmScopeSubtitle') || qs('#page-heatmap .card-title span');
+  const lev = $('hmLev')?.value === 'all' ? '全部杠杆' : ($('hmLev')?.value || '全部杠杆');
+  const refEx = snapshot?.leverage_exchange || selectedHeatmapExchange();
+  if (subtitle) subtitle.textContent = `(${slashSymbol(selectedHeatmapSymbol())} · ${selectedHeatmapInterval()} · 聚合清算 · ${lev} · 杠杆参考 ${exchangeLabel(refEx)})`;
+  const rows = heatmapStrengthRows(snapshot);
   const clusters = heatmapClustersFromSnapshot(snapshot);
-  const total = points.reduce((acc, p) => acc + (+(p.value ?? p.intensity ?? 0) || 0), 0);
+  const total = rows.reduce((acc, p) => acc + p.value, 0);
   const maxCluster = clusters.slice().sort((a, b) => (+(b.volume ?? b.score ?? 0)) - (+(a.volume ?? a.score ?? 0)))[0];
-  const statsCard = qsa('#page-heatmap div[style*="grid-template-columns:1fr 1fr 1.2fr"] > .card')[0];
+  const tierCounts = { high: 0, medium: 0, low: 0 };
+  clusters.forEach(c => { tierCounts[c.leverage_tier || 'low'] = (tierCounts[c.leverage_tier || 'low'] || 0) + 1; });
+  const clusterTotal = Math.max(clusters.length, 1);
+  const statsCard = qsa('#page-heatmap .heatmap-bottom-grid > .card')[0] || qsa('#page-heatmap div[style*="grid-template-columns:1fr 1fr 1.2fr"] > .card')[0];
   if (!statsCard) return;
+  if (!rows.length && !clusters.length) {
+    statsCard.innerHTML = `
+      <div class="card-head"><div class="card-title">清算统计</div></div>
+      <div style="text-align:center;color:var(--text-3);padding:22px;background:var(--surface-2);border-radius:8px">暂无真实清算统计；点击“刷新”后从 Claw402 返回生成。</div>`;
+    return;
+  }
   statsCard.innerHTML = `
     <div class="card-head"><div class="card-title">清算统计</div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">
-      <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">有效热力点</div><div style="font-size:18px;font-weight:700;font-family:var(--mono)">${points.length}</div><div style="font-size:10.5px;color:var(--text-3)">来自 Claw402 返回</div></div>
+      <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">有效清算点</div><div style="font-size:18px;font-weight:700;font-family:var(--mono)">${rows.length}</div><div style="font-size:10.5px;color:var(--text-3)">来自 Claw402 返回</div></div>
       <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">累计强度</div><div style="font-size:18px;font-weight:700;font-family:var(--mono)">${fmt.num(total, 2)}<span style="font-size:11px;color:var(--text-3);font-weight:400"> raw</span></div><div style="font-size:10.5px;color:var(--text-3)">未伪造 USDT 金额</div></div>
       <div style="padding:10px;background:var(--surface-2);border-radius:8px"><div style="font-size:10.5px;color:var(--text-3)">最强区域</div><div style="font-size:14px;font-weight:700;font-family:var(--mono)">${maxCluster ? `${fmt.price(maxCluster.low, 0)} - ${fmt.price(maxCluster.high, 0)}` : '-'}</div><div style="font-size:10.5px;color:var(--text-3)">强度 ${maxCluster ? fmt.num(maxCluster.volume ?? maxCluster.score, 2) : '-'}</div></div>
+    </div>
+    <div style="font-size:11px;color:var(--text-2);margin-bottom:6px">聚类强度分布</div>
+    <div style="display:flex;height:28px;border-radius:6px;overflow:hidden;background:var(--surface-2)">
+      ${['high','medium','low'].map((tier, idx) => {
+        const colors = { high: '#e74c3c', medium: '#f39c12', low: '#0984e3' };
+        const pct = clusters.length ? (tierCounts[tier] / clusterTotal) * 100 : 0;
+        return pct ? `<div style="width:${pct}%;background:${colors[tier]};display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600">${pct.toFixed(1)}%</div>` : '';
+      }).join('') || '<div style="display:flex;align-items:center;justify-content:center;width:100%;color:var(--text-3);font-size:11px">暂无聚类分布</div>'}
     </div>
     <div style="font-size:11px;color:var(--text-2);line-height:1.6">清算地图仅展示后端归一化后的真实 Claw402 响应；未返回的字段显示为空，不再使用演示数据。</div>`;
 }
@@ -702,8 +1654,10 @@ function renderHeatmapZones() {
   const clusters = heatmapClustersFromSnapshot(snapshot);
   if (!clusters.length) {
     body.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:18px">暂无真实清算地图聚类数据</td></tr>';
+    if ($('hmZonesCount')) $('hmZonesCount').textContent = '查看全部清算区 (0) ›';
     return;
   }
+  if ($('hmZonesCount')) $('hmZonesCount').textContent = `查看全部清算区 (${clusters.length}) ›`;
   body.innerHTML = clusters.slice(0, 8).map(c => {
     const tier = c.leverage_tier || 'low';
     const color = tier === 'high' ? 'var(--red)' : tier === 'medium' ? 'var(--amber)' : 'var(--text-3)';
@@ -721,18 +1675,25 @@ function renderHeatmapAlerts() {
   const cards = qsa('#page-heatmap div[style*="grid-template-columns:1fr 1fr 1.2fr"] > .card');
   const alertCard = cards[1];
   if (!alertCard) return;
-  const clusters = heatmapClustersFromSnapshot(latestHeatmapSnapshot()).slice(0, 6);
+  const snapshot = latestHeatmapSnapshot();
+  const current = heatmapCurrentPrice(snapshot);
+  const clusters = heatmapClustersFromSnapshot(snapshot)
+    .filter(c => c && Number.isFinite(+c.low) && Number.isFinite(+c.high))
+    .slice()
+    .sort((a, b) => (+b.volume || +b.score || 0) - (+a.volume || +a.score || 0))
+    .slice(0, 8);
   alertCard.innerHTML = `
     <div class="card-head"><div class="card-title">大额清算提醒 <span class="info">i</span></div></div>
     <table class="tbl" style="font-size:11.5px">
       <thead><tr><th>价格 (USDT)</th><th>方向</th><th>强度</th><th>触发条件</th><th>时间</th></tr></thead>
       <tbody>${clusters.length ? clusters.map(c => {
-        const side = c.side === 'above' ? '空头清算' : c.side === 'below' ? '多头清算' : '现价附近';
         const price = ((+c.low + +c.high) / 2) || +c.price || 0;
         const cls = c.side === 'above' ? 'neg' : 'pos';
-        return `<tr><td class="${cls}" style="font-weight:600">${fmt.price(price, 0)}</td><td>${side}</td><td class="${cls}" style="font-weight:600">${fmt.num(c.volume ?? c.score, 2)}</td><td>${c.side === 'above' ? '>=' : c.side === 'below' ? '<=' : '~'} ${fmt.price(price, 0)}</td><td>${fmt.ts(latestHeatmapSnapshot().timestamp)}</td></tr>`;
+        const trigger = c.side === 'above' ? `>= ${fmt.price(+c.low, 0)}` : c.side === 'below' ? `<= ${fmt.price(+c.high, 0)}` : `~ ${fmt.price(current || price, 0)}`;
+        return `<tr><td class="${cls}" style="font-weight:600">${fmt.price(price, 0)}</td><td>${sideLabel(c.side)}</td><td class="${cls}" style="font-weight:600">${fmt.num(c.volume ?? c.score, 2)}</td><td>${trigger}</td><td>${fmt.ts(snapshot.timestamp)}</td></tr>`;
       }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--text-3);padding:18px">暂无真实清算提醒</td></tr>'}</tbody>
     </table>`;
+  if ($('hmAlertsCount')) $('hmAlertsCount').textContent = `查看全部提醒 (${clusters.length}) ›`;
 }
 
 function renderHeatmapHistory() {
@@ -1276,7 +2237,10 @@ function wireAgentControl() {
     const pk = state.pk || ($('pk')?.value || '').trim();
     if (!pk) { toast('请先在设置中填写钱包私钥', 'err'); return; }
     try {
-      await api('POST', '/api/agent/start', { pk });
+      await api('POST', '/api/agent/start', {
+        pk,
+        llm_review_api_key: ($('llmReviewKey')?.value || '').trim(),
+      });
       toast('Agent 已启动', 'ok');
       pollStatus();
     } catch (e) { toast('启动失败: ' + e.message, 'err'); }
@@ -2241,7 +3205,8 @@ function updateCostEstimate() {
   const xOn = $('autoXSentiment')?.checked;
   const xInterval = Math.max(300, +($('autoXInterval')?.value || 900));
 
-  const heatmapCostPerHour = heatmapOn ? (3600 / heatmapInterval) * 0.001 : 0;
+  const liquidationMapCost = 0.002;
+  const heatmapCostPerHour = heatmapOn ? (3600 / heatmapInterval) * liquidationMapCost : 0;
   const xCostPerHour = xOn ? (3600 / xInterval) * 0.02 : 0;
   const total = heatmapCostPerHour + xCostPerHour;
 
@@ -2252,7 +3217,7 @@ function updateCostEstimate() {
   if (breakdown) {
     const parts = [];
     parts.push('市场数据: 交易所 API 免费');
-    if (heatmapOn) parts.push(`清算地图 ${(3600/heatmapInterval).toFixed(1)}次/h × 0.001 = ${heatmapCostPerHour.toFixed(4)} USDC`);
+    if (heatmapOn) parts.push(`清算地图 ${(3600/heatmapInterval).toFixed(1)}次/h × ${liquidationMapCost.toFixed(3)} = ${heatmapCostPerHour.toFixed(4)} USDC`);
     if (xOn) parts.push(`X情绪 ${(3600/xInterval).toFixed(1)}次/h × ~$0.02 = $${xCostPerHour.toFixed(4)}`);
     if (total === 0) parts.push('当前配置无额外费用');
     else parts.push(`合计约 $${total.toFixed(4)}/h ≈ $${(total*24).toFixed(3)}/天`);
@@ -2456,6 +3421,7 @@ async function bootstrap() {
   // Also auto-check xAI chat + poster status on boot
   refreshGrokMeta();
   checkXPosterStatus();
+  loadBinanceSymbols();
 
   // Wire AI analysis page
   $('btnRunAnalysis')?.addEventListener('click', runAIAnalysis);
@@ -2471,6 +3437,17 @@ async function bootstrap() {
   updateCostEstimate();
 
   // Wire logs page
+  const logsFilter = $('logsFilter');
+  if (logsFilter) {
+    ['tick', 'decision'].forEach(kind => {
+      if (!qsa('option', logsFilter).some(opt => opt.value === kind)) {
+        const opt = document.createElement('option');
+        opt.value = kind;
+        opt.textContent = kind;
+        logsFilter.appendChild(opt);
+      }
+    });
+  }
   $('btnLogsRefresh')?.addEventListener('click', loadLogs);
   $('btnLogsDiagnose')?.addEventListener('click', diagnoseLogs);
   $('logsFilter')?.addEventListener('change', loadLogs);
@@ -2480,14 +3457,23 @@ async function bootstrap() {
   $('btnPipelineGenerate')?.addEventListener('click', pipelineGenerate);
   $('btnPipelineRefreshHistory')?.addEventListener('click', pipelineLoadHistory);
   $('btnMarketRefresh')?.addEventListener('click', () => refreshAgentData());
-  $('btnHmRefresh')?.addEventListener('click', () => refreshAgentData({ forceHeatmap: true }));
+  $('btnHmRefresh')?.addEventListener('click', () => refreshLiquidationMap());
+  ['hmSym','hdrSymbol','configSymbol'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener('change', () => { el.value = slashSymbol(normalizeUsdtSymbol(el.value)); });
+    el.addEventListener('blur', () => { el.value = slashSymbol(normalizeUsdtSymbol(el.value)); });
+  });
+  $('hmLev')?.addEventListener('change', () => pageHooks.heatmap?.());
 
   // Load data only if keys are ready
   if (state.keysReady) {
     await Promise.all([loadOrders(), loadEvents()]);
-    pollStatus();
+    await pollStatus();
     renderDashCharts();
   }
+  const initialPage = (location.hash || '').replace('#', '');
+  if (initialPage && $('page-' + initialPage)) navTo(initialPage);
 
   // Start polling (functions internally check keysReady)
   setInterval(pollStatus, 5000);
@@ -2540,7 +3526,7 @@ async function saveSettings() {
   const exchangeCredentials = normalizeExchangeCredentials({ exchange_credentials: state.exchangeCredentials });
   const binanceKey = exchangeCredentials.binance.api_key || '';
   const binanceSecret = exchangeCredentials.binance.secret || '';
-  const selectedSymbol = (($('configSymbol')?.value || $('hdrSymbol')?.value || 'BTC/USDT').replace('/', '')).toUpperCase();
+  const selectedSymbol = normalizeUsdtSymbol($('configSymbol')?.value || $('hdrSymbol')?.value || 'BTC/USDT');
   const selectedExchange = normalizeExchange($('exchangeCredExchange')?.value || $('configExchange')?.value || $('hdrExchange')?.value || 'binance');
   syncExchangeSelectors(selectedExchange);
 
@@ -2562,6 +3548,10 @@ async function saveSettings() {
   config.poll_seconds = Math.max(10, +($('autoMarketInterval')?.value || 60));
   config.liq_map_snapshot_interval_seconds = Math.max(60, +($('autoHeatmapInterval')?.value || 600));
   config.llm_review_enabled = !!$('autoLlmReview')?.checked;
+  config.safety_mode = $('configSafetyMode')?.value || $('safetyMode')?.value || 'paper';
+  config.min_opportunity_score = Math.max(0, Math.min(100, +($('minOpportunityScore')?.value || 70)));
+  config.decision_report_retention = Math.max(10, Math.min(1000, +($('decisionReportRetention')?.value || 100)));
+  config.save_claw402_raw_samples = !!$('saveClawRawSamples')?.checked;
 
   try {
     await saveDesktopSettings({

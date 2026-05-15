@@ -34,13 +34,13 @@ class EvolutionEngine:
     def analyze(self, state, config: StrategyConfig, lookback: int = 50) -> dict[str, Any]:
         orders = [order for order in state.orders if order.get("mode") == "paper" and order.get("status") == "CLOSED"][:lookback]
         summary = self._summary(orders)
-        recommendations = self._recommendations(summary, config, orders)
         return {
             "timestamp": utc_now(),
             "mode": "suggest_only",
             "lookback": lookback,
             "summary": summary,
-            "recommendations": recommendations,
+            "failure_clusters": self._failure_clusters(orders, state.events),
+            "recommendations": self._recommendations(summary, config, orders),
             "blocked_params": sorted(BLOCKED_PARAMS),
             "evolvable_params": sorted(EVOLVABLE_PARAMS),
         }
@@ -64,16 +64,16 @@ class EvolutionEngine:
                 skipped.append({"param": param, "reason": "no effective change"})
                 continue
             updates[param] = suggested
-            applied.append({"param": param, "current": current, "suggested": suggested, "reason": rec.get("reason", "")})
+            applied.append({"param": param, "current": current, "suggested": suggested, "rollback": current, "reason": rec.get("reason", "")})
         return {"updates": updates, "applied": applied, "skipped": skipped}
 
     def _summary(self, orders: list[dict[str, Any]]) -> dict[str, Any]:
         pnls = [float(order.get("pnl_usd") or 0) for order in orders]
         wins = [pnl for pnl in pnls if pnl > 0]
         losses = [pnl for pnl in pnls if pnl < 0]
-        time_stops = [order for order in orders if "time stop" in str(order.get("reason", ""))]
-        stop_losses = [order for order in orders if "stop loss" in str(order.get("reason", ""))]
-        take_profits = [order for order in orders if "take profit" in str(order.get("reason", ""))]
+        time_stops = [order for order in orders if "time stop" in str(order.get("reason", "")).lower()]
+        stop_losses = [order for order in orders if "stop loss" in str(order.get("reason", "")).lower()]
+        take_profits = [order for order in orders if "take profit" in str(order.get("reason", "")).lower()]
         return {
             "trades": len(orders),
             "win_rate": round(len(wins) / len(orders), 4) if orders else 0,
@@ -92,22 +92,88 @@ class EvolutionEngine:
         recs = []
         trades = summary["trades"]
         if trades < 10:
-            return [{"param": "none", "current": None, "suggested": None, "reason": "样本少于 10 笔，只建议继续 paper 收集数据", "confidence": 0.2}]
+            return [{
+                "param": "none",
+                "current": None,
+                "suggested": None,
+                "reason": "sample size below 10 CLOSED paper trades; keep collecting paper data",
+                "evidence": {"trades": trades},
+                "impact": "none",
+                "rollback": None,
+                "confidence": 0.2,
+            }]
         if summary["time_stop_rate"] > 0.35:
-            recs.append(self._rec("max_holding_minutes", config.max_holding_minutes, max(8, int(config.max_holding_minutes * 0.75)), "时间止损比例偏高，缩短持仓时间以减少回吐", 0.65))
+            recs.append(self._rec("max_holding_minutes", config.max_holding_minutes, max(8, int(config.max_holding_minutes * 0.75)), "time-stop rate is high; shorten holding time to reduce late reversals", 0.65))
         if summary["stop_loss_rate"] > 0.35:
-            recs.append(self._rec("max_heatmap_distance_pct", config.max_heatmap_distance_pct, max(0.003, round(config.max_heatmap_distance_pct * 0.85, 4)), "止损比例偏高，收紧热力图距离要求，减少离关键清算区太远的反打", 0.68))
-            recs.append(self._rec("min_heatmap_cluster_score", config.min_heatmap_cluster_score, round(config.min_heatmap_cluster_score * 1.15, 3), "止损比例偏高，提高 cluster score 门槛过滤弱热力图信号", 0.62))
+            recs.append(self._rec("max_heatmap_distance_pct", config.max_heatmap_distance_pct, max(0.003, round(config.max_heatmap_distance_pct * 0.85, 4)), "stop-loss rate is high; require entries closer to heatmap clusters", 0.68))
+            recs.append(self._rec("min_heatmap_cluster_score", config.min_heatmap_cluster_score, round(config.min_heatmap_cluster_score * 1.15, 3), "stop-loss rate is high; raise heatmap cluster score threshold", 0.62))
         if summary["max_consecutive_losses"] >= config.max_consecutive_losses:
-            recs.append(self._rec("loss_pause_minutes", config.loss_pause_minutes, min(360, int(config.loss_pause_minutes * 1.25)), "最大连续亏损触发，延长暂停时间降低单边行情连续接飞刀风险", 0.7))
+            recs.append(self._rec("loss_pause_minutes", config.loss_pause_minutes, min(360, int(config.loss_pause_minutes * 1.25)), "max consecutive losses reached; extend pause after loss streaks", 0.7))
         if summary["profit_factor"] > 1.4 and summary["win_rate"] > 0.5 and summary["take_profit_rate"] > 0.35:
-            recs.append(self._rec("min_reward_risk", config.min_reward_risk, min(2.2, round(config.min_reward_risk * 1.1, 2)), "近期收益因子和胜率较好，可小幅提高 R:R 以扩大优质信号收益", 0.55))
+            recs.append(self._rec("min_reward_risk", config.min_reward_risk, min(2.2, round(config.min_reward_risk * 1.1, 2)), "profit factor and win rate are strong; slightly raise reward/risk target", 0.55))
         if summary["profit_factor"] < 0.9 and summary["trades"] >= 20:
-            recs.append(self._rec("cooldown_seconds", config.cooldown_seconds, min(28_800, int(config.cooldown_seconds * 1.2)), "收益因子低于 0.9，增加冷却时间减少过度交易", 0.66))
-        return recs or [{"param": "none", "current": None, "suggested": None, "reason": "当前样本未发现明确需要调整的参数", "confidence": 0.5}]
+            recs.append(self._rec("cooldown_seconds", config.cooldown_seconds, min(28_800, int(config.cooldown_seconds * 1.2)), "profit factor below 0.9; increase cooldown to reduce overtrading", 0.66))
+        return recs or [{
+            "param": "none",
+            "current": None,
+            "suggested": None,
+            "reason": "no clear parameter adjustment found in the current sample",
+            "evidence": {"trades": trades},
+            "impact": "none",
+            "rollback": None,
+            "confidence": 0.5,
+        }]
 
     def _rec(self, param: str, current: Any, suggested: Any, reason: str, confidence: float) -> dict[str, Any]:
-        return {"param": param, "current": current, "suggested": suggested, "reason": reason, "confidence": confidence}
+        return {
+            "param": param,
+            "current": current,
+            "suggested": suggested,
+            "rollback": current,
+            "reason": reason,
+            "evidence": {},
+            "impact": "future paper ticks only",
+            "confidence": confidence,
+        }
+
+    def _failure_clusters(self, orders: list[dict[str, Any]], events: list[dict[str, Any]]) -> dict[str, Any]:
+        clusters = {
+            "heatmap_too_far": 0,
+            "weak_cluster": 0,
+            "time_stop": 0,
+            "stop_loss_cluster": 0,
+            "low_rr": 0,
+            "overtrading": 0,
+            "stale_data": 0,
+        }
+        evidence = {key: [] for key in clusters}
+        for order in orders:
+            reason = str(order.get("reason") or "").lower()
+            pnl = float(order.get("pnl_usd") or 0)
+            if "time stop" in reason:
+                clusters["time_stop"] += 1
+                evidence["time_stop"].append(order.get("id"))
+            if "stop loss" in reason or pnl < 0:
+                clusters["stop_loss_cluster"] += 1
+                evidence["stop_loss_cluster"].append(order.get("id"))
+        for event in events[:200]:
+            text = (str(event.get("message") or "") + " " + str(event.get("data") or "")).lower()
+            if "distance" in text and "heatmap" in text:
+                clusters["heatmap_too_far"] += 1
+                evidence["heatmap_too_far"].append(event.get("request_id"))
+            if "cluster" in text and ("weak" in text or "score" in text):
+                clusters["weak_cluster"] += 1
+                evidence["weak_cluster"].append(event.get("request_id"))
+            if "reward" in text or "r:r" in text:
+                clusters["low_rr"] += 1
+                evidence["low_rr"].append(event.get("request_id"))
+            if "cooldown" in text or "daily trade limit" in text:
+                clusters["overtrading"] += 1
+                evidence["overtrading"].append(event.get("request_id"))
+            if "stale" in text or "too old" in text:
+                clusters["stale_data"] += 1
+                evidence["stale_data"].append(event.get("request_id"))
+        return {key: {"count": count, "evidence": evidence[key][:5]} for key, count in clusters.items()}
 
     def _max_consecutive_losses(self, pnls: list[float]) -> int:
         best = 0

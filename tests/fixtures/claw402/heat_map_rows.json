@@ -1,0 +1,9 @@
+{
+  "data": {
+    "rows": [
+      {"price": 80500, "longValue": 1200000, "shortValue": 0},
+      {"price": 81000, "longValue": 900000, "shortValue": 300000},
+      {"price": 81500, "longValue": 0, "shortValue": 1750000}
+    ]
+  }
+}

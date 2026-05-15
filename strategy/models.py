@@ -20,6 +20,10 @@ class StrategyConfig:
     interval: str = "1h"
     size: int = 24
     poll_seconds: int = 60
+    safety_mode: str = "paper"
+    min_opportunity_score: float = 70
+    save_claw402_raw_samples: bool = False
+    decision_report_retention: int = 100
     min_liquidation_usd: float = 10_000_000
     dominance_ratio: float = 1.3
     entry_mode: str = "conservative"
@@ -87,6 +91,8 @@ class StrategyConfig:
                 values[key] = value
         values["size"] = int(values["size"])
         values["poll_seconds"] = max(10, int(values["poll_seconds"]))
+        values["min_opportunity_score"] = min(max(float(values["min_opportunity_score"]), 0), 100)
+        values["decision_report_retention"] = max(10, min(int(values["decision_report_retention"]), 1000))
         values["leverage"] = int(values["leverage"])
         values["max_leverage"] = int(values["max_leverage"])
         values["liq_map_snapshot_interval_seconds"] = max(60, int(values["liq_map_snapshot_interval_seconds"]))
@@ -104,6 +110,10 @@ class StrategyConfig:
         values["symbol"] = str(values["symbol"]).upper()
         values["exchange"] = str(values["exchange"]).lower()
         values["mode"] = str(values["mode"]).lower()
+        values["safety_mode"] = str(values["safety_mode"]).lower()
+        if values["safety_mode"] not in {"observe", "paper", "confirm", "live"}:
+            values["safety_mode"] = "paper"
+        values["mode"] = "live" if values["safety_mode"] == "live" else "paper"
         values["entry_mode"] = str(values["entry_mode"]).lower()
         values["stop_mode"] = str(values["stop_mode"]).lower()
         values["llm_provider"] = str(values["llm_provider"]).lower()

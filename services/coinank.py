@@ -43,6 +43,15 @@ def create_client(private_key: str):
         return None, "", str(exc)
 
 
+def coinank_exchange(exchange: str) -> str:
+    value = str(exchange or "").strip()
+    return {
+        "binance": "Binance",
+        "okx": "OKX",
+        "bybit": "Bybit",
+    }.get(value.lower(), value)
+
+
 def unwrap_data(raw: Any, fallback: Any):
     if isinstance(raw, dict):
         return raw.get("data", raw)

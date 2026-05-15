@@ -5,7 +5,8 @@ from typing import Any
 
 from services.llm import _as_dict
 
-from services.liquidation_maps import normalize_liquidation_map
+from services.coinank import coinank_exchange
+from services.liquidation_maps import fuse_liquidation_maps, normalize_liquidation_map
 from strategy.heatmap import HeatmapClusterAnalyzer
 from strategy.models import StrategyConfig, utc_now
 
@@ -26,21 +27,45 @@ class HeatmapSnapshotManager:
                 return self._result(latest, "snapshot reused before refresh interval", from_cache=True)
             return self._stale(latest, "heatmap snapshot stale")
 
-        cost = config.liq_map_cost_usdc
+        base_cost = config.liq_map_cost_usdc
+        planned_cost = base_cost * 2
         budget_kind = "liq_map_event" if force else "liq_map_scheduled"
         kind_budget = config.event_liq_map_budget_usdc if force else config.scheduled_liq_map_budget_usdc
-        if not state.can_spend_api_budget(cost, config.daily_api_budget_usdc, budget_kind, kind_budget):
-            reason = f"{budget_kind} budget exhausted"
-            if latest and latest_age <= config.max_heatmap_snapshot_age_seconds:
-                return self._result(latest, reason, from_cache=True, budget_blocked=True)
-            return self._stale(latest, reason, budget_blocked=True)
+        include_leverage_reference = True
+        if not state.can_spend_api_budget(planned_cost, config.daily_api_budget_usdc, budget_kind, kind_budget):
+            include_leverage_reference = False
+            if not state.can_spend_api_budget(base_cost, config.daily_api_budget_usdc, budget_kind, kind_budget):
+                reason = f"{budget_kind} budget exhausted"
+                if latest and latest_age <= config.max_heatmap_snapshot_age_seconds:
+                    return self._result(latest, reason, from_cache=True, budget_blocked=True)
+                return self._stale(latest, reason, budget_blocked=True)
 
         try:
-            raw_liq = client.coinank.liquidation.liq_map(symbol=config.symbol, exchange=config.exchange, interval=config.interval)
-            raw_heat = client.coinank.liquidation.heat_map(exchange=config.exchange, symbol=config.symbol, interval=config.interval)
-            liq_map = normalize_liquidation_map(raw_heat if raw_heat else raw_liq, symbol=config.symbol, exchange=config.exchange, interval=config.interval)
-            if not liq_map.get("has_data"):
-                liq_map = normalize_liquidation_map(raw_liq, symbol=config.symbol, exchange=config.exchange, interval=config.interval)
+            raw_agg = client.coinank.liquidation.agg_liq_map(base_coin=config.coin, interval=config.interval)
+            state.record_claw402_raw_sample("agg_liq_map", config.symbol, config.exchange, config.interval, raw_agg)
+            agg_map = normalize_liquidation_map(raw_agg, symbol=config.symbol, exchange=config.exchange, interval=config.interval)
+            raw_liq = None
+            exchange_map = normalize_liquidation_map(raw_liq, symbol=config.symbol, exchange=config.exchange, interval=config.interval)
+            leverage_error = None
+            if include_leverage_reference:
+                claw_exchange = coinank_exchange(config.exchange)
+                try:
+                    raw_liq = client.coinank.liquidation.liq_map(symbol=config.symbol, exchange=claw_exchange, interval=config.interval)
+                    state.record_claw402_raw_sample("liq_map", config.symbol, config.exchange, config.interval, raw_liq)
+                    exchange_map = normalize_liquidation_map(raw_liq, symbol=config.symbol, exchange=config.exchange, interval=config.interval)
+                except Exception as exc:
+                    leverage_error = str(exc)
+                    state.add_event(
+                        "heatmap",
+                        "leverage reference map unavailable; using aggregate liquidation map only",
+                        {"symbol": config.symbol, "exchange": config.exchange, "interval": config.interval, "error": leverage_error},
+                        level="warn",
+                        module="claw402",
+                        action="liqmap_leverage",
+                    )
+            liq_map = fuse_liquidation_maps(agg_map if agg_map.get("has_data") else exchange_map, leverage_map=exchange_map)
+            liq_map["scope"] = "aggregate"
+            actual_cost = base_cost * (2 if raw_liq is not None else 1)
         except Exception as exc:
             if latest and latest_age <= config.max_heatmap_snapshot_age_seconds:
                 return self._result(latest, f"liq map refresh failed, using cached snapshot: {exc}", from_cache=True, refresh_error=str(exc))
@@ -58,21 +83,25 @@ class HeatmapSnapshotManager:
         snapshot = {
             "symbol": config.symbol,
             "coin": config.coin,
+            "map_scope": "aggregate",
+            "leverage_exchange": config.exchange if raw_liq is not None else None,
+            "leverage_error": leverage_error,
             "interval": config.interval,
             "timestamp": utc_now(),
             "epoch": time.time(),
             "price": price,
             "liq_map": liq_map,
             "heatmap": analysis,
-            "cost_usdc": cost,
+            "cost_usdc": actual_cost,
         }
-        state.record_api_cost("liq_map", cost, config.symbol)
-        state.record_api_cost(budget_kind, cost, config.symbol)
+        state.record_api_cost("liq_map", actual_cost, config.symbol)
+        state.record_api_cost(budget_kind, actual_cost, config.symbol)
         change_ratio = self._change_ratio(latest, snapshot)
         snapshot["change_ratio"] = change_ratio
-        if not latest or change_ratio >= config.min_heatmap_change_ratio:
+        schema_changed = not self._has_current_snapshot_schema(latest)
+        if not latest or schema_changed or change_ratio >= config.min_heatmap_change_ratio:
             state.record_heatmap_snapshot(snapshot, config.max_heatmap_snapshots)
-            return self._result(snapshot, "liq map refreshed", refreshed=True, change_ratio=change_ratio)
+            return self._result(snapshot, "liq map refreshed", refreshed=True, change_ratio=change_ratio, schema_changed=schema_changed)
         return self._result(latest, "liq map refreshed but unchanged", from_cache=True, refreshed=True, deduped=True, change_ratio=change_ratio)
 
     def _change_ratio(self, previous: dict[str, Any] | None, current: dict[str, Any]) -> float:
@@ -120,6 +149,19 @@ class HeatmapSnapshotManager:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def _visual_interval(self, liq_map: dict[str, Any], fallback: str) -> str:
+        meta = _as_dict(liq_map.get("meta"))
+        visual = _as_dict(meta.get("visual"))
+        return str(visual.get("chart_interval") or meta.get("chart_interval") or fallback or "")
+
+    def _has_current_snapshot_schema(self, snapshot: dict[str, Any] | None) -> bool:
+        snapshot = _as_dict(snapshot)
+        if not snapshot:
+            return False
+        liq_map = _as_dict(snapshot.get("liq_map"))
+        shape = _as_dict(liq_map.get("shape"))
+        return bool(shape.get("leverage_point_count"))
 
     def _result(self, snapshot: dict[str, Any], reason: str, **flags) -> dict[str, Any]:
         snapshot = _as_dict(snapshot)

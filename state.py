@@ -20,6 +20,8 @@ HEATMAP_SNAPSHOTS_PATH = os.path.join(STATE_DIR, "heatmap_snapshots.jsonl")
 API_COSTS_PATH = os.path.join(STATE_DIR, "api_costs.jsonl")
 ORDERS_PATH = os.path.join(STATE_DIR, "orders.jsonl")
 EVENTS_PATH = os.path.join(STATE_DIR, "events.jsonl")
+DECISION_REPORTS_PATH = os.path.join(STATE_DIR, "decision_reports.jsonl")
+CLAW402_RAW_SAMPLES_PATH = os.path.join(STATE_DIR, "claw402_raw_samples.jsonl")
 CORE_STATE_PATH = os.path.join(STATE_DIR, "agent_state.json")
 
 
@@ -35,7 +37,17 @@ class AgentState:
         self.events: list[dict[str, Any]] = []
         self.heatmap_snapshots: list[dict[str, Any]] = []
         self.api_costs: list[dict[str, Any]] = []
+        self.decision_reports: list[dict[str, Any]] = []
+        self.claw402_raw_samples: list[dict[str, Any]] = []
         self.agent_phase = "STOPPED"
+        self.last_decision_report: dict[str, Any] | None = None
+        self.diagnostics_summary: dict[str, Any] = {}
+        self.tick_count = 0
+        self.last_tick_started_at: str | None = None
+        self.last_tick_finished_at: str | None = None
+        self.last_tick_status: int | None = None
+        self.next_tick_due_at: str | None = None
+        self.worker_error_count = 0
         self._last_trade_ts: dict[str, float] = {}
         self._loss_pause_until = 0.0
         self._lock = threading.RLock()
@@ -45,6 +57,8 @@ class AgentState:
         os.makedirs(STATE_DIR, exist_ok=True)
         self.heatmap_snapshots = self._read_jsonl(HEATMAP_SNAPSHOTS_PATH, 288)
         self.api_costs = self._read_jsonl(API_COSTS_PATH, 1000)
+        self.decision_reports = self._read_jsonl(DECISION_REPORTS_PATH, self.config.decision_report_retention)
+        self.claw402_raw_samples = self._read_jsonl(CLAW402_RAW_SAMPLES_PATH, 50)
         self.orders = self._read_jsonl(ORDERS_PATH, 100)
         self.events = self._read_jsonl(EVENTS_PATH, 200)
         core = self._read_json(CORE_STATE_PATH)
@@ -54,6 +68,14 @@ class AgentState:
         self.last_risk = core.get("last_risk")
         self.last_snapshot = core.get("last_snapshot")
         self.last_llm_review = core.get("last_llm_review")
+        self.last_decision_report = core.get("last_decision_report") or (self.decision_reports[0] if self.decision_reports else None)
+        self.diagnostics_summary = core.get("diagnostics_summary") if isinstance(core.get("diagnostics_summary"), dict) else {}
+        self.tick_count = int(core.get("tick_count") or 0)
+        self.last_tick_started_at = core.get("last_tick_started_at")
+        self.last_tick_finished_at = core.get("last_tick_finished_at")
+        self.last_tick_status = core.get("last_tick_status")
+        self.next_tick_due_at = core.get("next_tick_due_at")
+        self.worker_error_count = int(core.get("worker_error_count") or 0)
         self._loss_pause_until = float(core.get("loss_pause_until") or 0)
         self._rebuild_last_trade_ts()
 
@@ -95,6 +117,14 @@ class AgentState:
                 "last_risk": self.last_risk,
                 "last_snapshot": self.last_snapshot,
                 "last_llm_review": self.last_llm_review,
+                "last_decision_report": self.last_decision_report,
+                "diagnostics_summary": self.diagnostics_summary,
+                "tick_count": self.tick_count,
+                "last_tick_started_at": self.last_tick_started_at,
+                "last_tick_finished_at": self.last_tick_finished_at,
+                "last_tick_status": self.last_tick_status,
+                "next_tick_due_at": self.next_tick_due_at,
+                "worker_error_count": self.worker_error_count,
                 "loss_pause_until": self._loss_pause_until,
                 "last_trade_ts": self._last_trade_ts,
                 "saved_at": utc_now(),
@@ -145,6 +175,35 @@ class AgentState:
             self.add_event("phase", phase, data or {})
             self._save_core_state()
 
+    def record_tick_start(self):
+        with self._lock:
+            self.tick_count += 1
+            self.last_tick_started_at = utc_now()
+            self.last_tick_status = None
+            self.add_event("tick", "started", {"tick_count": self.tick_count}, module="agent", action="tick.start")
+            self._save_core_state()
+
+    def record_tick_finish(self, status: int, result: dict[str, Any] | None = None):
+        with self._lock:
+            self.last_tick_finished_at = utc_now()
+            self.last_tick_status = int(status)
+            if status >= 400:
+                self.worker_error_count += 1
+            else:
+                self.worker_error_count = 0
+            data = {"tick_count": self.tick_count, "status": status}
+            if isinstance(result, dict) and result.get("error"):
+                data["error"] = result.get("error")
+                data["code"] = result.get("code")
+            self.add_event("tick", "finished", data, level="error" if status >= 400 else "info", module="agent", action="tick.finish")
+            self._save_core_state()
+
+    def set_next_tick_due(self, wait_seconds: int | float):
+        with self._lock:
+            due_epoch = time.time() + max(0, float(wait_seconds or 0))
+            self.next_tick_due_at = datetime.fromtimestamp(due_epoch, timezone.utc).isoformat()
+            self._save_core_state()
+
     def record_snapshot(self, snapshot):
         with self._lock:
             self.last_snapshot = snapshot.to_dict() if hasattr(snapshot, "to_dict") else snapshot
@@ -171,6 +230,56 @@ class AgentState:
             self.last_llm_review = review
             self.add_event("llm_review", str(review.get("decision") or "skipped"), review)
             self._save_core_state()
+
+    def record_decision_report(self, report: dict[str, Any]):
+        with self._lock:
+            self.last_decision_report = report
+            self.decision_reports.insert(0, report)
+            self.decision_reports = self.decision_reports[: self.config.decision_report_retention]
+            self._append_jsonl(DECISION_REPORTS_PATH, report)
+            if len(self.decision_reports) >= self.config.decision_report_retention:
+                self._rewrite_jsonl(DECISION_REPORTS_PATH, self.decision_reports)
+            self.add_event("decision", str(report.get("final_action") or "unknown"), {
+                "score": (report.get("opportunity_score") or {}).get("score"),
+                "blockers": report.get("blockers") or [],
+                "next_watch": report.get("next_watch"),
+            }, module="agent", action="decision.report")
+            self._save_core_state()
+
+    def record_claw402_raw_sample(self, kind: str, symbol: str, exchange: str, interval: str, raw: Any):
+        if not self.config.save_claw402_raw_samples:
+            return
+        with self._lock:
+            sample = {
+                "timestamp": utc_now(),
+                "kind": kind,
+                "symbol": symbol,
+                "exchange": exchange,
+                "interval": interval,
+                "raw": self._redact(raw),
+            }
+            self.claw402_raw_samples.insert(0, sample)
+            self.claw402_raw_samples = self.claw402_raw_samples[:50]
+            self._append_jsonl(CLAW402_RAW_SAMPLES_PATH, sample)
+
+    def record_diagnostics_summary(self, summary: dict[str, Any]):
+        with self._lock:
+            self.diagnostics_summary = summary
+            self._save_core_state()
+
+    def _redact(self, value: Any):
+        if isinstance(value, dict):
+            redacted = {}
+            for key, item in value.items():
+                key_s = str(key).lower()
+                if any(secret in key_s for secret in ("key", "secret", "token", "auth", "wallet", "private")):
+                    redacted[key] = "***"
+                else:
+                    redacted[key] = self._redact(item)
+            return redacted
+        if isinstance(value, list):
+            return [self._redact(item) for item in value[:500]]
+        return value
 
     def record_order(self, order: Order):
         with self._lock:
@@ -362,14 +471,33 @@ class AgentState:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
+            heartbeat = {
+                "tick_count": self.tick_count,
+                "last_tick_started_at": self.last_tick_started_at,
+                "last_tick_finished_at": self.last_tick_finished_at,
+                "last_tick_status": self.last_tick_status,
+                "next_tick_due_at": self.next_tick_due_at,
+                "worker_error_count": self.worker_error_count,
+                "stale": self._heartbeat_stale(),
+            }
             return {
                 "running": self.running,
                 "phase": self.agent_phase,
                 "config": self.config.to_dict(),
+                "safety_mode": self.config.safety_mode,
                 "last_signal": self.last_signal,
                 "last_risk": self.last_risk,
                 "last_snapshot": self.last_snapshot,
                 "last_llm_review": self.last_llm_review,
+                "last_decision_report": self.last_decision_report,
+                "diagnostics_summary": self.diagnostics_summary,
+                "heartbeat": heartbeat,
+                "tick_count": self.tick_count,
+                "last_tick_started_at": self.last_tick_started_at,
+                "last_tick_finished_at": self.last_tick_finished_at,
+                "last_tick_status": self.last_tick_status,
+                "next_tick_due_at": self.next_tick_due_at,
+                "worker_error_count": self.worker_error_count,
                 "last_order": self.orders[0] if self.orders else None,
                 "heatmap": self.heatmap_status(),
                 "consecutive_losses": self.consecutive_losses(),
@@ -377,3 +505,12 @@ class AgentState:
                 "orders_count": len(self.orders),
                 "events_count": len(self.events),
             }
+
+    def _heartbeat_stale(self) -> bool:
+        if not self.running:
+            return False
+        timestamp = self.last_tick_finished_at or self.last_tick_started_at
+        if not timestamp:
+            return True
+        elapsed = time.time() - self._parse_epoch(timestamp)
+        return elapsed > max(self.config.poll_seconds * 2.5, 180)

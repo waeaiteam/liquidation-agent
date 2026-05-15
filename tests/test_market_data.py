@@ -118,6 +118,36 @@ class MarketDataTests(unittest.TestCase):
         with self.assertRaises(MarketDataRestrictedError):
             service.fetch_snapshot("BTCUSDT", exchange="binance")
 
+    def test_lists_binance_usdt_perpetual_symbols(self):
+        calls = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return json.dumps({
+                    "symbols": [
+                        {"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT", "contractType": "PERPETUAL", "status": "TRADING"},
+                        {"symbol": "ETHUSDC", "baseAsset": "ETH", "quoteAsset": "USDC", "contractType": "PERPETUAL", "status": "TRADING"},
+                        {"symbol": "OLDUSDT", "baseAsset": "OLD", "quoteAsset": "USDT", "contractType": "PERPETUAL", "status": "BREAK"},
+                        {"symbol": "SOLUSDT", "baseAsset": "SOL", "quoteAsset": "USDT", "contractType": "CURRENT_QUARTER", "status": "TRADING"},
+                        {"symbol": "WIFUSDT", "baseAsset": "WIF", "quoteAsset": "USDT", "contractType": "PERPETUAL", "status": "TRADING"},
+                    ]
+                }).encode()
+
+        def fake_urlopen(req, timeout=10):
+            calls.append(req.full_url)
+            return FakeResponse()
+
+        symbols = BinanceMarketDataService(urlopen_fn=fake_urlopen).list_binance_usdt_perpetual_symbols()
+
+        self.assertEqual([item["symbol"] for item in symbols], ["BTCUSDT", "WIFUSDT"])
+        self.assertIn("/fapi/v1/exchangeInfo", calls[0])
+
 
 if __name__ == "__main__":
     unittest.main()

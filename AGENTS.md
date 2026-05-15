@@ -9,6 +9,13 @@
 - 空头被大额清算后 → 寻找上方/当前高杠杆清算密集区 → 确认后反向做空
 - 这是高风险短线策略：快进快出、严格止损、禁止亏损加仓和马丁
 
+**运行方式：**
+- Agent 启动后必须按 `poll_seconds` 固定间隔循环复查，不把“启动”理解成只执行一次。
+- 每轮 tick 都必须经历：交易所行情刷新 → Claw402 清算区间/历史/OI/资金费率读取 → 清算事件预筛选 → 必要时刷新/复用清算热力图 → 信号生成 → 硬风控 → 可选 LLM 二次审查 → paper/live 执行或明确拒绝 → 事件日志记录。
+- 没有清算事件时继续 SCANNING；有事件但热力图过期、预算不足、确认不足或风控不通过时必须等待/拒绝，而不是为了开单而开单。
+- LLM 审查只能降低风险、缩小仓位、收紧止损或拒绝交易，不能放宽硬风控。
+- 自进化只基于 `CLOSED` paper 订单统计提出白名单参数建议，样本不足 10 笔时不应给激进优化结论。
+
 ---
 
 ## 技能包 (Skills)
@@ -67,6 +74,12 @@
 | ORDER_OPEN | 已开仓，持仓中 | 监控止盈止损 |
 | SIGNAL_REJECTED | 信号被风控拒绝 | 查看拒绝原因，考虑调整参数 |
 | STOPPED | Agent 已停止 | 点击启动按钮 |
+
+### Skill 7: Agent 循环监控
+- 检查 `status.running`、`status.phase`、`tick_count`、`last_tick_started_at`、`last_tick_finished_at`、`last_tick_status`、`next_tick_due_at`。
+- 如果 `running=true` 但 `next_tick_due_at` 长时间未更新，应提示循环可能卡住。
+- 如果 `worker_error_count` 连续升高，应优先查看 `events` 中最近 `error` / `tick.finish`。
+- 每轮 tick 失败时先定位失败阶段：市场行情、Claw402 支付/清算、热力图解析、信号生成、风控、LLM 审查、执行。
 
 ---
 
@@ -146,6 +159,11 @@
 - `events`: 最近 20 条事件日志
 - `heatmap`: 热力图状态（snapshots_count、latest_age_seconds、liq_map_cost_today）
 - `api_routes`: 可用 API 端点列表
+- `tick_count`: Agent 已执行的复查轮数
+- `last_tick_started_at` / `last_tick_finished_at`: 最近一轮 tick 起止时间
+- `last_tick_status`: 最近一轮 tick 的 HTTP 状态码，200 表示成功
+- `next_tick_due_at`: 后台 worker 下一次计划复查时间
+- `worker_error_count`: 后台 worker 连续错误次数
 
 ---
 

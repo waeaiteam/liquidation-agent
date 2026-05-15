@@ -18,10 +18,11 @@ from providers import LLM_PROVIDERS
 from services.agent_chat import chat_with_agent
 from services.backtest import run_simple_backtest
 from services.claw_docs import CLAW402_COINANK_ENDPOINTS, CLAW402_SUMMARY
-from services.coinank import create_client, fetch_market_snapshot, unwrap_data
+from services.coinank import coinank_exchange, create_client, fetch_market_snapshot, unwrap_data
+from services.decision import build_decision_report, opportunity_score
 from services.evolution import EvolutionEngine
 from services.heatmap_manager import HeatmapSnapshotManager
-from services.liquidation_maps import normalize_liquidation_map
+from services.liquidation_maps import fuse_liquidation_maps, normalize_liquidation_map
 from services.llm import _as_dict, analyze_with_llm
 from services.market_data import MarketDataError, MarketDataRestrictedError, market_data_service
 from services.strategy_agent import apply_llm_review, review_trade_with_llm
@@ -30,7 +31,7 @@ from services.xai_chat import get_chat_service as get_xai_chat
 from services.x_pipeline import get_pipeline_service as get_x_pipeline
 from services.x_poster import get_poster_service as get_x_poster
 from state import AgentState
-from strategy.models import MarketSnapshot, StrategyConfig
+from strategy.models import MarketSnapshot, RiskDecision, StrategyConfig, utc_now
 from strategy.signals import LiquidationContrarianSignalEngine
 from trading.execution import BinanceExecutionAdapter, PaperExecutionAdapter
 from trading.risk import RiskManager
@@ -60,6 +61,7 @@ binance_executor = BinanceExecutionAdapter()
 worker_stop = threading.Event()
 worker_thread: threading.Thread | None = None
 worker_private_key = ""
+worker_llm_review_key = ""
 tick_lock = threading.Lock()
 
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,20}$")
@@ -70,6 +72,11 @@ EXCHANGE_RE = re.compile(r"^[a-z0-9_-]{2,32}$")
 @app.route("/js/<path:filename>")
 def js_files(filename):
     return send_from_directory(os.path.join(BASE_DIR, "templates"), filename)
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
 
 
 def _parse_size(value, min_value=1, max_value=200):
@@ -89,6 +96,13 @@ def _json_error(message: str, status: int = 400):
 def _get_private_key(payload: dict[str, Any] | None = None, *, allow_worker_key: bool = False) -> str:
     payload = payload or {}
     return (payload.get("pk") or (worker_private_key if allow_worker_key else "") or os.getenv("CLAW402_PRIVATE_KEY", "")).strip()
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_market_payload(payload: dict[str, Any]) -> tuple[str, str, str, str, int, str]:
@@ -357,6 +371,14 @@ def market_refresh():
     except MarketDataError as exc:
         agent_state.add_event("error", str(exc), {"symbol": payload.get("symbol"), "exchange": payload.get("exchange")}, level="error", module="market_data", action="refresh")
         return jsonify({"error": str(exc)}), 502
+
+
+@app.route("/api/market/binance-symbols")
+def market_binance_symbols():
+    try:
+        return jsonify({"symbols": market_data_service.list_binance_usdt_perpetual_symbols()})
+    except MarketDataError as exc:
+        return jsonify({"symbols": [], "error": str(exc)}), 502
 
 
 @app.route("/api/market/sentiment")
@@ -761,25 +783,102 @@ def liqmap():
         return _json_error(err)
 
     try:
-        raw_liq = client.coinank.liquidation.liq_map(symbol=symbol, exchange=exchange, interval=interval)
-        raw_heat = client.coinank.liquidation.heat_map(exchange=exchange, symbol=symbol, interval=interval)
-        normalized = normalize_liquidation_map(raw_heat if raw_heat else raw_liq, symbol=symbol, exchange=exchange, interval=interval)
-        if not normalized.get("has_data"):
-            normalized = normalize_liquidation_map(raw_liq, symbol=symbol, exchange=exchange, interval=interval)
+        include_exchange_leverage = str(payload.get("include_exchange_leverage", "true")).lower() != "false"
+        base_cost = agent_state.config.liq_map_cost_usdc
+        planned_cost = base_cost * (2 if include_exchange_leverage else 1)
+        if not agent_state.can_spend_api_budget(planned_cost, agent_state.config.daily_api_budget_usdc):
+            if include_exchange_leverage and agent_state.can_spend_api_budget(base_cost, agent_state.config.daily_api_budget_usdc):
+                include_exchange_leverage = False
+            else:
+                return jsonify({"wallet": addr, "error": "Daily Claw402 liquidation map budget exhausted"}), 429
+        raw_agg = client.coinank.liquidation.agg_liq_map(base_coin=coin, interval=interval)
+        agent_state.record_claw402_raw_sample("agg_liq_map", symbol, exchange, interval, raw_agg)
+        agg_map = normalize_liquidation_map(raw_agg, symbol=symbol, exchange=exchange, interval=interval)
+        raw_liq = None
+        liq_map: dict[str, Any] = {}
+        leverage_error = None
+        if include_exchange_leverage:
+            claw_exchange = coinank_exchange(exchange)
+            try:
+                raw_liq = client.coinank.liquidation.liq_map(symbol=symbol, exchange=claw_exchange, interval=interval)
+                agent_state.record_claw402_raw_sample("liq_map", symbol, exchange, interval, raw_liq)
+                liq_map = normalize_liquidation_map(raw_liq, symbol=symbol, exchange=exchange, interval=interval)
+            except Exception as exc:
+                leverage_error = str(exc)
+                agent_state.add_event(
+                    "heatmap",
+                    "leverage reference map unavailable; using aggregate liquidation map only",
+                    {"symbol": symbol, "exchange": exchange, "interval": interval, "error": leverage_error},
+                    level="warn",
+                    module="claw402",
+                    action="liqmap_leverage",
+                )
+        normalized = fuse_liquidation_maps(agg_map if agg_map.get("has_data") else liq_map, leverage_map=liq_map)
+        normalized["scope"] = "aggregate"
+        raw_liq_data = _as_dict(unwrap_data(raw_liq, {}))
+        raw_agg_data = _as_dict(unwrap_data(raw_agg, {}))
+        actual_cost = base_cost * (2 if raw_liq is not None else 1)
+        last_snapshot = _as_dict(agent_state.last_snapshot)
+        price = (
+            _to_float(normalized.get("leverage_last_price"))
+            or _to_float(raw_liq_data.get("lastPrice"))
+            or _to_float(raw_agg_data.get("lastPrice"))
+            or _to_float(last_snapshot.get("price"))
+            or 0.0
+        )
+        analysis = heatmap_manager.analyzer.analyze(
+            normalized,
+            price,
+            symbol,
+            agent_state.config.heatmap_bucket_pct,
+            agent_state.config.min_heatmap_cluster_score,
+            agent_state.config.max_heatmap_distance_pct,
+            agent_state.config.allowed_heatmap_leverage_tiers,
+        )
         snapshot = {
             "symbol": symbol,
             "coin": coin,
             "exchange": exchange,
+            "map_scope": "aggregate",
+            "leverage_exchange": exchange if raw_liq is not None else None,
+            "leverage_error": leverage_error,
             "interval": interval,
-            "timestamp": time.time(),
+            "timestamp": utc_now(),
             "epoch": time.time(),
-            "price": _as_dict(agent_state.last_snapshot).get("price", 0),
+            "price": price,
             "liq_map": normalized,
-            "heatmap": heatmap_manager.analyzer.analyze(normalized, float(_as_dict(agent_state.last_snapshot).get("price") or 0), symbol, agent_state.config.heatmap_bucket_pct, agent_state.config.min_heatmap_cluster_score, agent_state.config.max_heatmap_distance_pct, agent_state.config.allowed_heatmap_leverage_tiers),
-            "cost_usdc": agent_state.config.liq_map_cost_usdc,
+            "heatmap": analysis,
+            "cost_usdc": actual_cost,
         }
+        agent_state.record_api_cost("liq_map", actual_cost, symbol)
+        agent_state.record_api_cost("liq_map_manual", actual_cost, symbol)
         agent_state.record_heatmap_snapshot(snapshot, agent_state.config.max_heatmap_snapshots)
-        return jsonify({"wallet": addr, "liq_map": normalized, "raw_liq_map": raw_liq, "raw_heat_map": raw_heat, "heatmap": snapshot["heatmap"]})
+        agent_state.add_event(
+            "heatmap",
+            "manual liquidation map refreshed",
+            {
+                "symbol": symbol,
+                "exchange": exchange,
+                "map_scope": "aggregate",
+                "interval": interval,
+                "source": normalized.get("source"),
+                "shape": normalized.get("shape"),
+                "cost_usdc": actual_cost,
+                "leverage_error": leverage_error,
+            },
+            module="claw402",
+            action="liqmap",
+        )
+        return jsonify({
+            "wallet": addr,
+            "liq_map": normalized,
+            "raw_agg_liq_map": raw_agg,
+            "raw_liq_map": raw_liq,
+            "leverage_error": leverage_error,
+            "heatmap": snapshot["heatmap"],
+            "snapshot": snapshot,
+            "status": agent_state.status(),
+        })
     except Claw402Error as exc:
         agent_state.add_event("error", f"Payment failed: {exc}", {"symbol": symbol, "exchange": exchange, "interval": interval}, level="error", module="claw402", action="liqmap")
         return jsonify({"wallet": addr, "error": f"Payment failed: {exc}"}), 402
@@ -843,9 +942,9 @@ def agent_chat():
         api_routes = [
             {"method": "POST", "path": "/api/wallet", "purpose": "connect wallet and derive address"},
             {"method": "POST", "path": "/api/liquidation", "purpose": "fetch basic liquidation and market data"},
-            {"method": "POST", "path": "/api/liqmap", "purpose": "fetch one paid liquidation heatmap"},
+            {"method": "POST", "path": "/api/liqmap", "purpose": "fetch one paid CoinAnk liquidation map"},
             {"method": "POST", "path": "/api/agent/tick", "purpose": "run one strategy decision cycle"},
-            {"method": "GET", "path": "/api/heatmap/snapshots", "purpose": "read stored heatmap snapshots"},
+            {"method": "GET", "path": "/api/heatmap/snapshots", "purpose": "read stored liquidation-map snapshots"},
             {"method": "GET", "path": "/api/orders", "purpose": "read orders"},
             {"method": "GET", "path": "/api/events", "purpose": "read events"},
         ]
@@ -894,7 +993,7 @@ def agent_tick():
 
 @app.route("/api/agent/start", methods=["POST"])
 def agent_start():
-    global worker_thread, worker_private_key
+    global worker_thread, worker_private_key, worker_llm_review_key
     payload = request.get_json() or {}
     private_key = _get_private_key(payload)
     if not private_key:
@@ -902,6 +1001,7 @@ def agent_start():
     if worker_thread and worker_thread.is_alive():
         return jsonify(agent_state.status())
     worker_private_key = private_key
+    worker_llm_review_key = str(payload.get("llm_review_api_key") or "").strip()
     worker_stop.clear()
     agent_state.set_running(True)
     worker_thread = threading.Thread(target=_worker_loop, daemon=True)
@@ -911,9 +1011,10 @@ def agent_start():
 
 @app.route("/api/agent/stop", methods=["POST"])
 def agent_stop():
-    global worker_private_key
+    global worker_private_key, worker_llm_review_key
     worker_stop.set()
     worker_private_key = ""
+    worker_llm_review_key = ""
     agent_state.set_running(False)
     return jsonify(agent_state.status())
 
@@ -938,7 +1039,7 @@ def logs():
 @app.route("/api/data/stats")
 def data_stats():
     """Return data storage statistics."""
-    from state import STATE_DIR, HEATMAP_SNAPSHOTS_PATH, ORDERS_PATH, EVENTS_PATH
+    from state import STATE_DIR, HEATMAP_SNAPSHOTS_PATH, ORDERS_PATH, EVENTS_PATH, DECISION_REPORTS_PATH, CLAW402_RAW_SAMPLES_PATH
     def _file_size(path):
         try:
             return os.path.getsize(path)
@@ -948,6 +1049,8 @@ def data_stats():
         "orders": {"count": len(agent_state.orders), "size_bytes": _file_size(ORDERS_PATH)},
         "heatmap_snapshots": {"count": len(agent_state.heatmap_snapshots), "size_bytes": _file_size(HEATMAP_SNAPSHOTS_PATH)},
         "events": {"count": len(agent_state.events), "size_bytes": _file_size(EVENTS_PATH)},
+        "decision_reports": {"count": len(agent_state.decision_reports), "size_bytes": _file_size(DECISION_REPORTS_PATH)},
+        "claw402_raw_samples": {"count": len(agent_state.claw402_raw_samples), "size_bytes": _file_size(CLAW402_RAW_SAMPLES_PATH)},
         "data_dir": STATE_DIR,
     })
 
@@ -957,16 +1060,188 @@ def heatmap_snapshots():
     return jsonify({"heatmap": agent_state.heatmap_status(), "snapshots": agent_state.heatmap_snapshots})
 
 
+@app.route("/api/debug/fixture/heatmap", methods=["POST"])
+def debug_fixture_heatmap():
+    if os.getenv("ENABLE_DEBUG_FIXTURES") != "1":
+        return _json_error("debug fixtures disabled", 404)
+    payload = request.get_json() or {}
+    raw = payload.get("raw")
+    if raw is None:
+        return _json_error("raw fixture required")
+    symbol = str(payload.get("symbol") or agent_state.config.symbol).upper().replace("/", "")
+    exchange = str(payload.get("exchange") or agent_state.config.exchange).lower()
+    interval = str(payload.get("interval") or agent_state.config.interval)
+    normalized = normalize_liquidation_map(raw, symbol=symbol, exchange=exchange, interval=interval)
+    price = float(payload.get("price") or _as_dict(agent_state.last_snapshot).get("price") or 0)
+    analysis = heatmap_manager.analyzer.analyze(
+        normalized,
+        price,
+        symbol,
+        agent_state.config.heatmap_bucket_pct,
+        agent_state.config.min_heatmap_cluster_score,
+        agent_state.config.max_heatmap_distance_pct,
+        agent_state.config.allowed_heatmap_leverage_tiers,
+    )
+    snapshot = {
+        "symbol": symbol,
+        "coin": symbol.replace("USDT", ""),
+        "exchange": exchange,
+        "interval": interval,
+        "timestamp": utc_now(),
+        "epoch": time.time(),
+        "price": price,
+        "liq_map": normalized,
+        "heatmap": analysis,
+        "cost_usdc": 0,
+    }
+    agent_state.record_heatmap_snapshot(snapshot, agent_state.config.max_heatmap_snapshots)
+    return jsonify({"liq_map": normalized, "heatmap": analysis, "status": agent_state.status()})
+
+
+@app.route("/api/agent/reports")
+def agent_reports():
+    limit = max(1, min(int(request.args.get("limit", 20)), 100))
+    return jsonify({"reports": agent_state.decision_reports[:limit], "last": agent_state.last_decision_report})
+
+
+@app.route("/api/exchange/status")
+def exchange_status():
+    cfg = agent_state.config
+    result = {
+        "selected": cfg.exchange,
+        "exchanges": {
+            "binance": {"configured": bool(os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET")), "uses_public_market_data": True, "restricted": False, "message": "public futures market data"},
+            "okx": {"configured": bool(os.getenv("OKX_API_KEY") and os.getenv("OKX_API_SECRET")), "uses_public_market_data": True, "restricted": False, "message": "public swap market data"},
+            "bybit": {"configured": bool(os.getenv("BYBIT_API_KEY") and os.getenv("BYBIT_API_SECRET")), "uses_public_market_data": True, "restricted": False, "message": "public linear market data"},
+        },
+    }
+    for exchange in result["exchanges"]:
+        try:
+            market_data_service.fetch_snapshot(cfg.symbol, exchange=exchange, interval=cfg.interval, limit=2)
+            result["exchanges"][exchange]["ok"] = True
+        except MarketDataRestrictedError as exc:
+            result["exchanges"][exchange].update({"ok": False, "restricted": True, "message": str(exc)})
+        except Exception as exc:
+            result["exchanges"][exchange].update({"ok": False, "message": str(exc)})
+    return jsonify(result)
+
+
+@app.route("/api/agent/diagnostics")
+def agent_diagnostics():
+    checks = []
+    cfg = agent_state.config
+
+    def add(name, status, message, data=None):
+        checks.append({"name": name, "status": status, "message": message, "data": data or {}})
+
+    add("wallet", "pass" if bool(worker_private_key or os.getenv("CLAW402_PRIVATE_KEY")) else "warn", "worker/env wallet available" if bool(worker_private_key or os.getenv("CLAW402_PRIVATE_KEY")) else "wallet only checked when provided by frontend")
+    try:
+        market = market_data_service.fetch_snapshot(cfg.symbol, exchange=cfg.exchange, interval=cfg.interval, limit=2)
+        add("market_data", "pass", f"{cfg.exchange} public market data ok", {"price": market.get("price"), "source": market.get("source")})
+    except MarketDataRestrictedError as exc:
+        add("market_data", "fail", str(exc), {"code": "restricted_location"})
+    except Exception as exc:
+        add("market_data", "fail", str(exc))
+
+    latest_heatmap = agent_state.latest_heatmap_snapshot(cfg.symbol, cfg.interval)
+    heatmap_age = agent_state.heatmap_snapshot_age_seconds(latest_heatmap)
+    add("heatmap_cache", "pass" if latest_heatmap and heatmap_age <= cfg.max_heatmap_snapshot_age_seconds else "warn", "fresh heatmap snapshot available" if latest_heatmap and heatmap_age <= cfg.max_heatmap_snapshot_age_seconds else "no fresh heatmap snapshot cached", {"age_seconds": None if not latest_heatmap else round(heatmap_age, 1)})
+    add("llm_review", "pass" if not cfg.llm_review_enabled or cfg.llm_review_model else "warn", "LLM review disabled or configured")
+    add("x_service", "pass" if get_x_service().is_configured() else "warn", "xAI configured" if get_x_service().is_configured() else "xAI not configured")
+    try:
+        from state import STATE_DIR
+        os.makedirs(STATE_DIR, exist_ok=True)
+        test_path = os.path.join(STATE_DIR, ".diagnostic_write_test")
+        with open(test_path, "w", encoding="utf-8") as fh:
+            fh.write("ok")
+        os.remove(test_path)
+        add("data_dir", "pass", "data directory writable", {"path": STATE_DIR})
+    except Exception as exc:
+        add("data_dir", "fail", str(exc))
+    heartbeat = agent_state.status().get("heartbeat", {})
+    add("worker_heartbeat", "warn" if heartbeat.get("stale") else "pass", "heartbeat stale" if heartbeat.get("stale") else "heartbeat ok", heartbeat)
+    overall = "fail" if any(c["status"] == "fail" for c in checks) else "warn" if any(c["status"] == "warn" for c in checks) else "pass"
+    summary = {"overall": overall, "checks": checks, "checked_at": time.time()}
+    agent_state.record_diagnostics_summary({"overall": overall, "checked_at": summary["checked_at"]})
+    return jsonify(summary)
+
+
+@app.route("/api/agent/replay", methods=["POST"])
+def agent_replay():
+    payload = request.get_json() or {}
+    cfg = StrategyConfig.from_dict({**agent_state.config.to_dict(), **(payload.get("config") or {}), "safety_mode": "observe"})
+    klines = payload.get("klines") if isinstance(payload.get("klines"), list) else []
+    snapshots = payload.get("snapshots") if isinstance(payload.get("snapshots"), list) else []
+    heatmaps = payload.get("heatmap_snapshots") if isinstance(payload.get("heatmap_snapshots"), list) else []
+    if not snapshots and klines:
+        snapshots = [
+            {
+                "price": item.get("close"),
+                "market": {"klines": klines[: idx + 1], "source": "replay"},
+                "intervals": item.get("intervals") or {},
+            }
+            for idx, item in enumerate(klines)
+        ]
+    reports = []
+    for idx, raw in enumerate(snapshots[:200]):
+        snap = MarketSnapshot(
+            coin=cfg.coin,
+            symbol=str(raw.get("symbol") or cfg.symbol).upper(),
+            exchange=str(raw.get("exchange") or cfg.exchange).lower(),
+            interval=str(raw.get("interval") or cfg.interval),
+            price=float(raw.get("price") or 0),
+            intervals=raw.get("intervals") if isinstance(raw.get("intervals"), dict) else {},
+            history=raw.get("history") if isinstance(raw.get("history"), list) else [],
+            oi=raw.get("oi") if isinstance(raw.get("oi"), list) else [],
+            long_short=raw.get("long_short") if isinstance(raw.get("long_short"), list) else [],
+            funding=raw.get("funding") if isinstance(raw.get("funding"), list) else [],
+            liq_map=(heatmaps[idx].get("liq_map") if idx < len(heatmaps) and isinstance(heatmaps[idx], dict) else raw.get("liq_map") or {}),
+            market=raw.get("market") if isinstance(raw.get("market"), dict) else {},
+        )
+        signal = signal_engine.generate(snap, cfg)
+        risk = risk_manager.validate(signal, cfg, agent_state, live_confirmed=False)
+        score = opportunity_score(signal, {"usable": bool(snap.liq_map), "age_seconds": 0}, cfg, risk)
+        blockers = []
+        if not signal.valid:
+            blockers.extend(signal.reasons)
+        if not score["passed"]:
+            blockers.append(f"opportunity score {score['score']} below {score['threshold']}")
+        if not risk.approved:
+            blockers.extend(risk.reasons)
+        reports.append(build_decision_report(
+            config=cfg,
+            snapshot=snap,
+            candidate=signal,
+            signal=signal,
+            heatmap_result={"usable": bool(snap.liq_map), "reason": "replay", "age_seconds": 0},
+            risk=risk,
+            llm_review=None,
+            order=None,
+            score=score,
+            final_action="REPLAY_APPROVED" if signal.valid and risk.approved and score["passed"] else "REPLAY_WAIT",
+            blockers=blockers,
+            tick_count=idx + 1,
+        ))
+    return jsonify({"reports": reports, "count": len(reports)})
+
+
 def _worker_loop():
     consecutive_errors = 0
     max_consecutive_errors = 10
     while not worker_stop.is_set():
+        result, status = {}, 500
         try:
-            run_agent_tick({"live_confirmed": False}, allow_worker_key=True)
+            payload = {
+                "live_confirmed": False,
+                "llm_review_api_key": worker_llm_review_key,
+            }
+            result, status = run_agent_tick(payload, allow_worker_key=True)
+            if status >= 400:
+                raise RuntimeError(result.get("error") or f"agent tick failed with HTTP {status}")
             consecutive_errors = 0
         except Exception as exc:
             consecutive_errors += 1
-            agent_state.add_event("error", f"[{consecutive_errors}/{max_consecutive_errors}] {exc}")
+            agent_state.add_event("error", f"[{consecutive_errors}/{max_consecutive_errors}] {exc}", module="agent", action="worker_loop")
             if consecutive_errors >= max_consecutive_errors:
                 agent_state.add_event("error", "连续错误过多，Agent 自动停止")
                 agent_state.set_running(False)
@@ -974,6 +1249,7 @@ def _worker_loop():
         wait_seconds = max(10, agent_state.config.poll_seconds)
         if consecutive_errors > 0:
             wait_seconds = min(300, wait_seconds * (2 ** min(consecutive_errors, 5)))
+        agent_state.set_next_tick_due(wait_seconds)
         worker_stop.wait(wait_seconds)
     agent_state.set_running(False)
 
@@ -984,8 +1260,20 @@ def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: b
     acquired = tick_lock.acquire(timeout=60) if wait_for_tick else tick_lock.acquire(blocking=False)
     if not acquired:
         return {"error": "agent tick already running", "phase": agent_state.agent_phase}, 409
+    agent_state.record_tick_start()
+    result: dict[str, Any] | None = None
+    status = 500
+    report_written = False
+    config = agent_state.config
+    snapshot = None
+    candidate = None
+    signal = None
+    decision = None
+    llm_review = None
+    order = None
+    heatmap_result: dict[str, Any] = {}
+    score: dict[str, Any] | None = None
     try:
-        config = agent_state.config
         config_patch = dict(payload.get("config") or {})
         for key in ("coin", "symbol", "exchange", "interval"):
             if payload.get(key):
@@ -994,11 +1282,13 @@ def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: b
             config = agent_state.update_config(config_patch)
         pk = _get_private_key(payload, allow_worker_key=allow_worker_key)
         if not pk:
-            return {"error": "Enter wallet key"}, 400
+            result, status = {"error": "Enter wallet key"}, 400
+            return result, status
 
         client, addr, err = create_client(pk)
         if err:
-            return {"error": err}, 400
+            result, status = {"error": err}, 400
+            return result, status
 
         agent_state.set_phase("SCANNING")
         market = market_data_service.fetch_snapshot(config.symbol, exchange=config.exchange, interval=config.interval)
@@ -1043,6 +1333,18 @@ def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: b
 
         live_confirmed = bool(payload.get("live_confirmed"))
         decision = risk_manager.validate(signal, config, agent_state, live_confirmed=live_confirmed)
+        score = opportunity_score(signal, heatmap_result, config, decision)
+        score_blocked = not score.get("passed")
+        if score_blocked and decision.approved:
+            decision = RiskDecision(
+                False,
+                [f"opportunity score {score['score']} below threshold {score['threshold']}", *decision.reasons],
+                decision.mode,
+                decision.notional_usd,
+                decision.leverage,
+                decision.stop_loss,
+                decision.take_profit,
+            )
         llm_review = None
         if decision.approved and config.llm_review_enabled:
             agent_state.set_phase("LLM_REVIEWING")
@@ -1066,42 +1368,105 @@ def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: b
         agent_state.record_risk(decision)
 
         order = None
-        if decision.approved:
+        final_action = "WAIT"
+        if decision.approved and config.safety_mode == "observe":
+            final_action = "OBSERVE_ONLY"
+            agent_state.set_phase("SIGNAL_REJECTED", {"reasons": ["observe mode: no orders are placed"]})
+        elif decision.approved and config.safety_mode == "confirm":
+            final_action = "PENDING_CONFIRMATION"
+            agent_state.set_phase("SIGNAL_REJECTED", {"reasons": ["confirm mode: waiting for user confirmation"]})
+        elif decision.approved and config.safety_mode == "live" and not config.live_enabled:
+            final_action = "LIVE_BLOCKED"
+            decision = RiskDecision(False, ["live safety mode requires live_enabled and implemented adapter", *decision.reasons], decision.mode, decision.notional_usd, decision.leverage, decision.stop_loss, decision.take_profit)
+            agent_state.record_risk(decision)
+            agent_state.set_phase("SIGNAL_REJECTED", {"reasons": decision.reasons})
+        elif decision.approved:
             agent_state.set_phase("ORDER_OPEN")
             executor = paper_executor if config.mode == "paper" else binance_executor
             order = executor.execute(signal, decision, config)
             agent_state.record_order(order)
             if config.mode == "paper":
                 agent_state.replace_orders(paper_executor.broker.orders)
+            final_action = "ORDER_OPENED" if order else "APPROVED"
         elif signal.valid:
             agent_state.set_phase("SIGNAL_REJECTED", {"reasons": decision.reasons})
+            final_action = "REJECTED"
         elif not liquidation_event:
             agent_state.set_phase("SCANNING")
+            final_action = "WAIT"
 
-        return {
+        blockers = []
+        if not signal.valid:
+            blockers.extend(signal.reasons)
+        if score and not score.get("passed"):
+            blockers.append(f"opportunity score {score['score']} below threshold {score['threshold']}")
+        if decision and not decision.approved:
+            blockers.extend(decision.reasons)
+        report = build_decision_report(
+            config=config,
+            snapshot=snapshot,
+            candidate=candidate,
+            signal=signal,
+            heatmap_result=heatmap_result,
+            risk=decision,
+            llm_review=llm_review,
+            order=order,
+            score=score,
+            final_action=final_action,
+            blockers=list(dict.fromkeys(str(item) for item in blockers if item)),
+            tick_count=agent_state.tick_count,
+        )
+        agent_state.record_decision_report(report)
+        report_written = True
+
+        result, status = {
             "snapshot": snapshot.to_dict(),
             "signal": signal.to_dict(),
             "risk": decision.to_dict(),
             "llm_review": llm_review,
             "order": order.to_dict() if order else None,
             "heatmap_result": {k: v for k, v in heatmap_result.items() if k != "snapshot"},
+            "decision_report": report,
             "status": agent_state.status(),
         }, 200
+        return result, status
     except Claw402Error as exc:
         agent_state.add_event("error", f"Payment failed: {exc}")
-        return {"error": f"Payment failed: {exc}"}, 402
+        result, status = {"error": f"Payment failed: {exc}"}, 402
+        return result, status
     except MarketDataRestrictedError as exc:
         agent_state.set_phase("ERROR", {"code": "restricted_location"})
         agent_state.add_event("error", str(exc), {"symbol": agent_state.config.symbol, "exchange": agent_state.config.exchange, "reason": "restricted_location"}, level="error", module="market_data", action="tick")
-        return {"error": str(exc), "code": "restricted_location"}, 451
+        result, status = {"error": str(exc), "code": "restricted_location"}, 451
+        return result, status
     except MarketDataError as exc:
         agent_state.set_phase("ERROR", {"code": "market_data_error"})
         agent_state.add_event("error", str(exc), {"symbol": agent_state.config.symbol, "exchange": agent_state.config.exchange}, level="error", module="market_data", action="tick")
-        return {"error": str(exc), "code": "market_data_error"}, 502
+        result, status = {"error": str(exc), "code": "market_data_error"}, 502
+        return result, status
     except Exception as exc:
         agent_state.add_event("error", str(exc))
-        return {"error": str(exc)}, 500
+        result, status = {"error": str(exc)}, 500
+        return result, status
     finally:
+        if not report_written and status >= 400:
+            report = build_decision_report(
+                config=config,
+                snapshot=snapshot,
+                candidate=candidate,
+                signal=signal,
+                heatmap_result=heatmap_result,
+                risk=decision,
+                llm_review=llm_review,
+                order=order,
+                score=score,
+                final_action="ERROR",
+                blockers=[result.get("error")] if isinstance(result, dict) and result.get("error") else ["tick failed"],
+                error=result.get("error") if isinstance(result, dict) else "tick failed",
+                tick_count=agent_state.tick_count,
+            )
+            agent_state.record_decision_report(report)
+        agent_state.record_tick_finish(status, result)
         tick_lock.release()
 
 

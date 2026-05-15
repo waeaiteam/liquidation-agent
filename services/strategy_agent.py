@@ -26,12 +26,12 @@ def review_trade_with_llm(provider_id: str, api_key: str, model: str, payload: d
     user_message = _review_user_message(payload)
     try:
         if provider_id == "anthropic":
-            text = _call_anthropic(api_key, model, {"review_payload": payload}, user_message)
+            text = _call_anthropic(api_key, model, {"review_payload": payload, "system_override": STRATEGY_REVIEW_SYSTEM}, user_message)
         else:
             base_url = payload.get("custom_base_url") if provider_id == "custom" else provider.get("base")
             if not base_url:
                 return _fallback("skipped", "LLM provider base URL missing")
-            text = _call_openai_compatible(base_url, api_key, model, {"review_payload": payload}, user_message)
+            text = _call_openai_compatible(base_url, api_key, model, {"review_payload": payload, "system_override": STRATEGY_REVIEW_SYSTEM}, user_message)
         return _sanitize_review(_parse_json(text))
     except Exception as exc:
         return _fallback("error", str(exc))
