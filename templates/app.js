@@ -21,6 +21,7 @@ const state = {
   grok: { apiKey: '', model: 'grok-4.3', baseUrl: 'https://api.x.ai/v1', systemPrompt: '' },
   lastDiagnostics: null,
   lastReplay: null,
+  activeHeatmapSnapshot: null,
 };
 
 function setText(id, value) {
@@ -68,8 +69,17 @@ function orderQty(order) {
   return order?.qty ?? order?.quantity ?? order?.size ?? null;
 }
 
+function heatmapSnapshotMatches(snapshot, symbol = selectedHeatmapSymbol(), interval = selectedHeatmapInterval()) {
+  if (!snapshot) return false;
+  return fullSymbol(snapshot.symbol || '') === fullSymbol(symbol) && String(snapshot.interval || '').toLowerCase() === String(interval || '').toLowerCase();
+}
+
 function latestHeatmapSnapshot() {
-  return state.lastStatus?.heatmap?.snapshots?.[0] || {};
+  const symbol = selectedHeatmapSymbol();
+  const interval = selectedHeatmapInterval();
+  if (heatmapSnapshotMatches(state.activeHeatmapSnapshot, symbol, interval)) return state.activeHeatmapSnapshot;
+  const snapshots = state.lastStatus?.heatmap?.snapshots || [];
+  return snapshots.find(snap => heatmapSnapshotMatches(snap, symbol, interval)) || {};
 }
 
 const CHAT_WELCOME = '你好！我是清算反向策略 Agent。我可以帮你分析当前市场状况、解读清算地图数据、调整策略参数，或者回答任何关于交易策略的问题。';
@@ -347,7 +357,6 @@ function syncExchangeSelectors(value, { includeCredential = true } = {}) {
   const exchange = normalizeExchange(value);
   if ($('hdrExchange')) $('hdrExchange').value = exchange;
   if ($('configExchange')) $('configExchange').value = exchange;
-  if ($('hmExch')) $('hmExch').value = exchange;
   if (includeCredential && $('exchangeCredExchange')) $('exchangeCredExchange').value = exchange;
   return exchange;
 }
@@ -378,12 +387,13 @@ function selectedHeatmapSymbol() {
 }
 
 function selectedHeatmapExchange() {
-  return normalizeExchange($('hmExch')?.value || selectedHeaderExchange());
+  return 'aggregate';
 }
 
 function selectedHeatmapInterval() {
-  const raw = $('hmInt')?.value || selectedHeaderInterval();
-  return String(raw).trim().replace(/H$/, 'h').replace(/D$/, 'd').replace(/W$/, 'w');
+  const raw = $('hmInt')?.value || '1d';
+  const normalized = String(raw).trim().toLowerCase();
+  return ['12h', '1d', '3d', '7d', '30d'].includes(normalized) ? normalized : '1d';
 }
 
 function normalizeExchange(value) {
@@ -418,6 +428,10 @@ function exchangeCredentialName(exchange) {
   if (exchange === 'okx') return 'OKX';
   if (exchange === 'bybit') return 'Bybit';
   return 'Binance';
+}
+
+function formatHeatmapError(error) {
+  return error?.message || '未知错误';
 }
 
 function persistVisibleExchangeCredentials(exchangeOverride) {
@@ -552,8 +566,11 @@ async function refreshLiquidationMap() {
       symbol: selectedHeatmapSymbol(),
       exchange: selectedHeatmapExchange(),
       interval: selectedHeatmapInterval(),
-      include_exchange_leverage: true,
     });
+    if (!heatmapSnapshotMatches(result.snapshot, selectedHeatmapSymbol(), selectedHeatmapInterval())) {
+      throw new Error('返回的清算地图与当前币种/周期不一致，已拒绝显示');
+    }
+    state.activeHeatmapSnapshot = result.snapshot;
     state.lastStatus = result.status || await api('GET', '/api/agent/status');
     renderHeader(state.lastStatus);
     renderDashKpis(state.lastStatus);
@@ -565,7 +582,7 @@ async function refreshLiquidationMap() {
     toast('已生成聚合清算地图', 'ok');
     return result;
   } catch (e) {
-    toast('生成聚合清算地图失败: ' + formatMarketError(e, selectedHeatmapExchange()), 'err', 5200);
+    toast('生成聚合清算地图失败: ' + formatHeatmapError(e), 'err', 5200);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = oldText; }
   }
@@ -864,24 +881,22 @@ function renderDashCharts() {
 
 // ============== HEATMAP PAGE ==============
 function renderHeatmapChart(chart, mode) {
-  const snapshots = state.lastStatus?.heatmap?.snapshots || [];
-  const latest = snapshots[0] || {};
+  const latest = latestHeatmapSnapshot();
   const normalized = latest.liq_map || {};
   const points = Array.isArray(normalized.points) ? normalized.points : [];
   const levelMap = Array.isArray(normalized.level_map) ? normalized.level_map : [];
-  const leveragePoints = Array.isArray(normalized.leverage_points) ? normalized.leverage_points : [];
-  if (!points.length && !levelMap.length) {
+  if (!heatmapSnapshotMatches(latest) || (!points.length && !levelMap.length)) {
     chart.setOption({
       grid: { left: 50, right: 10, top: 10, bottom: 30 },
       xAxis: { type: 'category', data: [], show: false },
       yAxis: { type: 'category', data: [], show: false },
       series: [{ type: 'heatmap', data: [] }],
       graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无清算地图数据', fontSize: 13, fill: '#9ea2ab', fontFamily: 'inherit' } }],
-      backgroundColor: '#1a1a2e',
+      backgroundColor: '#fff',
     }, true);
     return;
   }
-  if (points.length || leveragePoints.length) {
+  if (points.length) {
     renderLiquidationMapCanvas(chart, latest, mode);
     return;
   }
@@ -1089,27 +1104,30 @@ function renderLiquidationMapCanvas(chart, snapshot, mode) {
   const ctx = canvas.getContext('2d');
   const normalized = snapshot?.liq_map || {};
   const aggregatePoints = Array.isArray(normalized.points) ? normalized.points : [];
-  const leveragePoints = Array.isArray(normalized.leverage_points) ? normalized.leverage_points : [];
   const axisValues = [
     ...(Array.isArray(normalized.price_axis) ? normalized.price_axis : []),
-    ...(Array.isArray(normalized.leverage_price_axis) ? normalized.leverage_price_axis : []),
   ].map(Number).filter(Number.isFinite);
-  const currentPrice = +normalized.leverage_last_price || +snapshot?.price || +state.lastStatus?.last_snapshot?.price || 0;
-  const selectedLev = $('hmLev')?.value || 'all';
+  const currentPrice = +snapshot?.price || +state.lastStatus?.last_snapshot?.price || 0;
   const aggregateByPrice = new Map();
+  const seriesNames = [];
+  const seriesByPrice = new Map();
   aggregatePoints.forEach(p => {
     const price = +p.price;
     const value = +(p.value ?? p.intensity ?? 0);
     if (!Number.isFinite(price) || !Number.isFinite(value) || value <= 0) return;
+    const series = String(p.series_label || p.series || p.side || 'aggregate');
     aggregateByPrice.set(price, (aggregateByPrice.get(price) || 0) + value);
+    if (!seriesNames.includes(series)) seriesNames.push(series);
+    if (!seriesByPrice.has(price)) seriesByPrice.set(price, {});
+    const row = seriesByPrice.get(price);
+    row[series] = (row[series] || 0) + value;
   });
   const priceAxis = [...new Set([
     ...axisValues,
     ...aggregateByPrice.keys(),
-    ...leveragePoints.map(p => +p.price).filter(Number.isFinite),
     ...(currentPrice ? [currentPrice] : []),
   ])].filter(Number.isFinite).sort((a, b) => a - b);
-  if (!priceAxis.length || (!aggregateByPrice.size && !leveragePoints.length)) return;
+  if (!priceAxis.length || !aggregateByPrice.size) return;
 
   const minPrice = Math.min(...priceAxis);
   const maxPrice = Math.max(...priceAxis);
@@ -1136,46 +1154,23 @@ function renderLiquidationMapCanvas(chart, snapshot, mode) {
   }
   ctx.setLineDash([]);
 
-  const leverageOrder = ['x5', 'x10', 'x25', 'x50', 'x100'];
-  const leverageColors = { x5: '#8bd3f7', x10: '#78a7ff', x25: '#5f7dff', x50: '#ffc400', x100: '#ff7a2f' };
-  const byPrice = new Map();
-  let bucketedLeverageCount = 0;
-  leveragePoints.forEach(p => {
-    const price = +p.price;
-    const value = +(p.value ?? p.intensity ?? 0);
-    const key = p.leverage_bucket || leverageBucketFromSeries(p.leverage || p.series || p.series_label || p.side);
-    if (!Number.isFinite(price) || !Number.isFinite(value) || value <= 0 || !key) return;
-    if (selectedLev !== 'all' && key !== selectedLev) return;
-    if (!byPrice.has(price)) byPrice.set(price, {});
-    const row = byPrice.get(price);
-    row[key] = (row[key] || 0) + value;
-    bucketedLeverageCount += 1;
-  });
-  const hasLeverageBars = bucketedLeverageCount > 0;
-  const bars = hasLeverageBars
-    ? [...byPrice.entries()].map(([price, row]) => {
-        const total = leverageOrder.reduce((sum, key) => sum + (row[key] || 0), 0);
-        return { price, row, total };
-      }).filter(item => item.total > 0).sort((a, b) => a.price - b.price)
-    : (selectedLev === 'all'
-      ? [...aggregateByPrice.entries()].map(([price, total]) => ({ price, row: { aggregate: total }, total })).filter(item => item.total > 0).sort((a, b) => a.price - b.price)
-      : []);
+  const palette = ['#8bd3f7', '#78a7ff', '#5f7dff', '#ffc400', '#ff7a2f', '#18b59d', '#a78bfa', '#f97316', '#64748b'];
+  const seriesOrder = seriesNames.length ? seriesNames : ['aggregate'];
+  const seriesColors = Object.fromEntries(seriesOrder.map((name, idx) => [name, palette[idx % palette.length]]));
+  const bars = [...seriesByPrice.entries()].map(([price, row]) => {
+    const total = seriesOrder.reduce((sum, key) => sum + (row[key] || 0), 0);
+    return { price, row, total };
+  }).filter(item => item.total > 0).sort((a, b) => a.price - b.price);
   const maxBar = Math.max(...bars.map(b => b.total), 1);
   const barW = Math.max(1, Math.min(5, w / Math.max(priceAxis.length, 1) * 2.2));
   const barMaxH = h * 0.62;
   bars.forEach(item => {
     let y0 = barBase;
-    if (!hasLeverageBars) {
-      const bh = Math.max(1, (item.total / maxBar) * barMaxH);
-      ctx.fillStyle = 'rgba(100,116,139,.34)';
-      ctx.fillRect(x(item.price) - barW / 2, y0 - bh, barW, bh);
-      return;
-    }
-    leverageOrder.forEach(key => {
+    seriesOrder.forEach(key => {
       const value = item.row[key] || 0;
       if (!value) return;
       const bh = Math.max(1, (value / maxBar) * barMaxH);
-      ctx.fillStyle = leverageColors[key];
+      ctx.fillStyle = seriesColors[key] || '#64748b';
       ctx.fillRect(x(item.price) - barW / 2, y0 - bh, barW, bh);
       y0 -= bh;
     });
@@ -1261,16 +1256,7 @@ function renderLiquidationMapCanvas(chart, snapshot, mode) {
     const labels = [
       ['#18b59d', '累计空单清算强度'],
       ['#ff3347', '累计多单清算强度'],
-      ...(hasLeverageBars ? [
-        ['#8bd3f7', '5x 杠杆'],
-        ['#78a7ff', '10x 杠杆'],
-        ['#5f7dff', '25x 杠杆'],
-        ['#ffc400', '50x 杠杆'],
-        ['#ff7a2f', '100x 杠杆'],
-      ] : [[
-        '#64748b',
-        selectedLev === 'all' ? '聚合清算总量' : '所选杠杆暂无数据',
-      ]]),
+      ...seriesOrder.slice(0, 8).map(name => [seriesColors[name] || '#64748b', name]),
     ];
     const legendLeft = Math.max(4, plot.l);
     const legendRight = canvas.width - Math.max(8, plot.r);
@@ -1485,6 +1471,7 @@ pageHooks.heatmap = function () {
   if (corrChart) {
     const snapshots = state.lastStatus?.heatmap?.snapshots || [];
     const rows = snapshots
+      .filter(snap => heatmapSnapshotMatches(snap))
       .slice(0, 60)
       .map(snap => {
         const ts = Date.parse(snap.timestamp) || (+snap.epoch ? +snap.epoch * 1000 : Date.now());
@@ -1517,20 +1504,6 @@ pageHooks.heatmap = function () {
     }
   }
 };
-
-function leverageBucketFromSeries(series) {
-  const s = String(series || '').toLowerCase();
-  const match = s.match(/(?:x\s*)?(\d{1,3})(?:\s*x)?/);
-  if (!match) return '';
-  const leverage = Number(match[1]);
-  if (!Number.isFinite(leverage) || leverage <= 0) return '';
-  if (leverage <= 5) return 'x5';
-  if (leverage <= 10) return 'x10';
-  if (leverage <= 25) return 'x25';
-  if (leverage <= 50) return 'x50';
-  if (leverage <= 125) return 'x100';
-  return '';
-}
 
 function heatmapClustersFromSnapshot(snapshot) {
   const direct = snapshot?.heatmap?.clusters || [];
@@ -1584,22 +1557,18 @@ function heatmapClustersFromSnapshot(snapshot) {
 
 function heatmapStrengthRows(snapshot) {
   const normalized = snapshot?.liq_map || {};
-  const levPoints = Array.isArray(normalized.leverage_points) ? normalized.leverage_points : [];
-  const selectedLev = $('hmLev')?.value || 'all';
-  const points = levPoints.length ? levPoints : (Array.isArray(normalized.points) ? normalized.points : []);
+  const points = Array.isArray(normalized.points) ? normalized.points : [];
   return points
     .map(p => ({
       price: +p.price,
       value: +(p.value ?? p.intensity ?? 0),
       series: String(p.series || p.series_label || p.side || '').toLowerCase(),
-      bucket: p.leverage_bucket || leverageBucketFromSeries(p.leverage || p.series || p.series_label || p.side),
     }))
-    .filter(p => selectedLev === 'all' || p.bucket === selectedLev)
     .filter(p => Number.isFinite(p.price) && Number.isFinite(p.value) && p.value > 0);
 }
 
 function heatmapCurrentPrice(snapshot) {
-  return +snapshot?.liq_map?.leverage_last_price || +snapshot?.price || +state.lastStatus?.last_snapshot?.price || +state.lastStatus?.last_signal?.price || 0;
+  return +snapshot?.price || +state.lastStatus?.last_snapshot?.price || +state.lastStatus?.last_signal?.price || 0;
 }
 
 function sideLabel(side) {
@@ -1611,9 +1580,7 @@ function sideLabel(side) {
 function renderHeatmapSummary() {
   const snapshot = latestHeatmapSnapshot();
   const subtitle = $('hmScopeSubtitle') || qs('#page-heatmap .card-title span');
-  const lev = $('hmLev')?.value === 'all' ? '全部杠杆' : ($('hmLev')?.value || '全部杠杆');
-  const refEx = snapshot?.leverage_exchange || selectedHeatmapExchange();
-  if (subtitle) subtitle.textContent = `(${slashSymbol(selectedHeatmapSymbol())} · ${selectedHeatmapInterval()} · 聚合清算 · ${lev} · 杠杆参考 ${exchangeLabel(refEx)})`;
+  if (subtitle) subtitle.textContent = `(${slashSymbol(selectedHeatmapSymbol())} · ${selectedHeatmapInterval().toUpperCase()} · 聚合清算 · API series)`;
   const rows = heatmapStrengthRows(snapshot);
   const clusters = heatmapClustersFromSnapshot(snapshot);
   const total = rows.reduce((acc, p) => acc + p.value, 0);
@@ -3205,7 +3172,7 @@ function updateCostEstimate() {
   const xOn = $('autoXSentiment')?.checked;
   const xInterval = Math.max(300, +($('autoXInterval')?.value || 900));
 
-  const liquidationMapCost = 0.002;
+  const liquidationMapCost = 0.001;
   const heatmapCostPerHour = heatmapOn ? (3600 / heatmapInterval) * liquidationMapCost : 0;
   const xCostPerHour = xOn ? (3600 / xInterval) * 0.02 : 0;
   const total = heatmapCostPerHour + xCostPerHour;
@@ -3464,7 +3431,8 @@ async function bootstrap() {
     el.addEventListener('change', () => { el.value = slashSymbol(normalizeUsdtSymbol(el.value)); });
     el.addEventListener('blur', () => { el.value = slashSymbol(normalizeUsdtSymbol(el.value)); });
   });
-  $('hmLev')?.addEventListener('change', () => pageHooks.heatmap?.());
+  $('hmInt')?.addEventListener('change', () => pageHooks.heatmap?.());
+  $('hmSym')?.addEventListener('input', () => pageHooks.heatmap?.());
 
   // Load data only if keys are ready
   if (state.keysReady) {

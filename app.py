@@ -18,11 +18,11 @@ from providers import LLM_PROVIDERS
 from services.agent_chat import chat_with_agent
 from services.backtest import run_simple_backtest
 from services.claw_docs import CLAW402_COINANK_ENDPOINTS, CLAW402_SUMMARY
-from services.coinank import coinank_exchange, create_client, fetch_market_snapshot, unwrap_data
+from services.coinank import create_client, fetch_market_snapshot, unwrap_data
 from services.decision import build_decision_report, opportunity_score
 from services.evolution import EvolutionEngine
 from services.heatmap_manager import HeatmapSnapshotManager
-from services.liquidation_maps import fuse_liquidation_maps, normalize_liquidation_map
+from services.liquidation_maps import normalize_liquidation_map
 from services.llm import _as_dict, analyze_with_llm
 from services.market_data import MarketDataError, MarketDataRestrictedError, market_data_service
 from services.strategy_agent import apply_llm_review, review_trade_with_llm
@@ -765,7 +765,7 @@ def liqmap():
     coin = str(payload.get("coin", "BTC")).strip().upper()
     symbol = str(payload.get("symbol") or f"{coin}USDT").strip().upper().replace("/", "")
     exchange = str(payload.get("exchange") or agent_state.config.exchange).strip().lower()
-    interval = str(payload.get("interval", "1h")).strip()
+    interval = str(payload.get("interval", "1d")).strip().lower()
 
     if not pk:
         return _json_error("Enter wallet key")
@@ -783,46 +783,18 @@ def liqmap():
         return _json_error(err)
 
     try:
-        include_exchange_leverage = str(payload.get("include_exchange_leverage", "true")).lower() != "false"
         base_cost = agent_state.config.liq_map_cost_usdc
-        planned_cost = base_cost * (2 if include_exchange_leverage else 1)
-        if not agent_state.can_spend_api_budget(planned_cost, agent_state.config.daily_api_budget_usdc):
-            if include_exchange_leverage and agent_state.can_spend_api_budget(base_cost, agent_state.config.daily_api_budget_usdc):
-                include_exchange_leverage = False
-            else:
-                return jsonify({"wallet": addr, "error": "Daily Claw402 liquidation map budget exhausted"}), 429
+        if not agent_state.can_spend_api_budget(base_cost, agent_state.config.daily_api_budget_usdc):
+            return jsonify({"wallet": addr, "error": "Daily Claw402 liquidation map budget exhausted"}), 429
         raw_agg = client.coinank.liquidation.agg_liq_map(base_coin=coin, interval=interval)
         agent_state.record_claw402_raw_sample("agg_liq_map", symbol, exchange, interval, raw_agg)
-        agg_map = normalize_liquidation_map(raw_agg, symbol=symbol, exchange=exchange, interval=interval)
-        raw_liq = None
-        liq_map: dict[str, Any] = {}
-        leverage_error = None
-        if include_exchange_leverage:
-            claw_exchange = coinank_exchange(exchange)
-            try:
-                raw_liq = client.coinank.liquidation.liq_map(symbol=symbol, exchange=claw_exchange, interval=interval)
-                agent_state.record_claw402_raw_sample("liq_map", symbol, exchange, interval, raw_liq)
-                liq_map = normalize_liquidation_map(raw_liq, symbol=symbol, exchange=exchange, interval=interval)
-            except Exception as exc:
-                leverage_error = str(exc)
-                agent_state.add_event(
-                    "heatmap",
-                    "leverage reference map unavailable; using aggregate liquidation map only",
-                    {"symbol": symbol, "exchange": exchange, "interval": interval, "error": leverage_error},
-                    level="warn",
-                    module="claw402",
-                    action="liqmap_leverage",
-                )
-        normalized = fuse_liquidation_maps(agg_map if agg_map.get("has_data") else liq_map, leverage_map=liq_map)
+        normalized = normalize_liquidation_map(raw_agg, symbol=symbol, exchange=exchange, interval=interval)
         normalized["scope"] = "aggregate"
-        raw_liq_data = _as_dict(unwrap_data(raw_liq, {}))
         raw_agg_data = _as_dict(unwrap_data(raw_agg, {}))
-        actual_cost = base_cost * (2 if raw_liq is not None else 1)
+        actual_cost = base_cost
         last_snapshot = _as_dict(agent_state.last_snapshot)
         price = (
-            _to_float(normalized.get("leverage_last_price"))
-            or _to_float(raw_liq_data.get("lastPrice"))
-            or _to_float(raw_agg_data.get("lastPrice"))
+            _to_float(raw_agg_data.get("lastPrice"))
             or _to_float(last_snapshot.get("price"))
             or 0.0
         )
@@ -840,8 +812,6 @@ def liqmap():
             "coin": coin,
             "exchange": exchange,
             "map_scope": "aggregate",
-            "leverage_exchange": exchange if raw_liq is not None else None,
-            "leverage_error": leverage_error,
             "interval": interval,
             "timestamp": utc_now(),
             "epoch": time.time(),
@@ -864,7 +834,6 @@ def liqmap():
                 "source": normalized.get("source"),
                 "shape": normalized.get("shape"),
                 "cost_usdc": actual_cost,
-                "leverage_error": leverage_error,
             },
             module="claw402",
             action="liqmap",
@@ -873,8 +842,6 @@ def liqmap():
             "wallet": addr,
             "liq_map": normalized,
             "raw_agg_liq_map": raw_agg,
-            "raw_liq_map": raw_liq,
-            "leverage_error": leverage_error,
             "heatmap": snapshot["heatmap"],
             "snapshot": snapshot,
             "status": agent_state.status(),
