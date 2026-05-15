@@ -3,7 +3,7 @@ import unittest
 from io import BytesIO
 from urllib.error import HTTPError
 
-from services.market_data import BinanceMarketDataService, MarketDataError, MarketDataRestrictedError
+from services.market_data import BinanceMarketDataService, MarketDataError, MarketDataRestrictedError, compute_volatility
 
 
 class MarketDataTests(unittest.TestCase):
@@ -147,6 +147,47 @@ class MarketDataTests(unittest.TestCase):
 
         self.assertEqual([item["symbol"] for item in symbols], ["BTCUSDT", "WIFUSDT"])
         self.assertIn("/fapi/v1/exchangeInfo", calls[0])
+
+    def test_market_extras_use_free_public_apis(self):
+        calls = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                url = calls[-1]
+                if "/api/v3/global" in url:
+                    return json.dumps({"data": {
+                        "total_market_cap": {"usd": 2_500_000_000_000},
+                        "total_volume": {"usd": 90_000_000_000},
+                        "market_cap_change_percentage_24h_usd": 1.2,
+                        "market_cap_percentage": {"btc": 54.3, "eth": 16.4},
+                    }}).encode()
+                if "alternative.me/fng" in url:
+                    return json.dumps({"data": [{"value": "62", "value_classification": "Greed", "timestamp": "1"}]}).encode()
+                if "/coins/categories" in url:
+                    return json.dumps([
+                        {"name": "AI", "market_cap_change_24h": 4.2},
+                        {"name": "Meme", "market_cap_change_24h": -2.1},
+                    ]).encode()
+                return b"{}"
+
+        def fake_urlopen(req, timeout=10):
+            calls.append(req.full_url)
+            return FakeResponse()
+
+        service = BinanceMarketDataService(urlopen_fn=fake_urlopen)
+        self.assertEqual(service.global_market()["total_market_cap_usd"], 2_500_000_000_000)
+        self.assertEqual(service.fear_greed()["value"], 62)
+        self.assertEqual(service.sectors()[0]["name"], "AI")
+
+    def test_compute_volatility_from_klines(self):
+        klines = [{"close": 100}, {"close": 102}, {"close": 101}, {"close": 104}]
+        self.assertGreater(compute_volatility(klines, window=3), 0)
 
 
 if __name__ == "__main__":

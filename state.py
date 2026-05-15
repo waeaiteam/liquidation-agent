@@ -42,6 +42,8 @@ class AgentState:
         self.agent_phase = "STOPPED"
         self.last_decision_report: dict[str, Any] | None = None
         self.diagnostics_summary: dict[str, Any] = {}
+        self.scanner_status: dict[str, Any] = {}
+        self.agent_runtime: dict[str, Any] = {}
         self.tick_count = 0
         self.last_tick_started_at: str | None = None
         self.last_tick_finished_at: str | None = None
@@ -70,6 +72,8 @@ class AgentState:
         self.last_llm_review = core.get("last_llm_review")
         self.last_decision_report = core.get("last_decision_report") or (self.decision_reports[0] if self.decision_reports else None)
         self.diagnostics_summary = core.get("diagnostics_summary") if isinstance(core.get("diagnostics_summary"), dict) else {}
+        self.scanner_status = core.get("scanner_status") if isinstance(core.get("scanner_status"), dict) else {}
+        self.agent_runtime = core.get("agent_runtime") if isinstance(core.get("agent_runtime"), dict) else {}
         self.tick_count = int(core.get("tick_count") or 0)
         self.last_tick_started_at = core.get("last_tick_started_at")
         self.last_tick_finished_at = core.get("last_tick_finished_at")
@@ -119,6 +123,8 @@ class AgentState:
                 "last_llm_review": self.last_llm_review,
                 "last_decision_report": self.last_decision_report,
                 "diagnostics_summary": self.diagnostics_summary,
+                "scanner_status": self.scanner_status,
+                "agent_runtime": self.agent_runtime,
                 "tick_count": self.tick_count,
                 "last_tick_started_at": self.last_tick_started_at,
                 "last_tick_finished_at": self.last_tick_finished_at,
@@ -265,6 +271,16 @@ class AgentState:
     def record_diagnostics_summary(self, summary: dict[str, Any]):
         with self._lock:
             self.diagnostics_summary = summary
+            self._save_core_state()
+
+    def record_scanner_status(self, status: dict[str, Any]):
+        with self._lock:
+            self.scanner_status = status if isinstance(status, dict) else {}
+            self._save_core_state()
+
+    def record_agent_runtime(self, agent_type: str, status: dict[str, Any]):
+        with self._lock:
+            self.agent_runtime[str(agent_type).lower()] = status if isinstance(status, dict) else {}
             self._save_core_state()
 
     def _redact(self, value: Any):
@@ -491,6 +507,8 @@ class AgentState:
                 "last_llm_review": self.last_llm_review,
                 "last_decision_report": self.last_decision_report,
                 "diagnostics_summary": self.diagnostics_summary,
+                "scanner_status": self.scanner_status,
+                "agent_runtime": self.agent_runtime,
                 "heartbeat": heartbeat,
                 "tick_count": self.tick_count,
                 "last_tick_started_at": self.last_tick_started_at,

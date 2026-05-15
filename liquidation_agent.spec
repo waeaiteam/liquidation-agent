@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 import os
 
 project_root = os.path.abspath(os.path.dirname(SPEC))
-icon_path = os.path.join(project_root, "..", "liquidation_agent_electron", "build", "icon.ico")
+icon_path = os.path.join(project_root, "..", "LIQ-agent", "liquidation_agent_electron", "build", "icon.ico")
 if not os.path.exists(icon_path):
     icon_path = None  # fall back to default PyInstaller icon if not yet provided
 
@@ -14,6 +14,15 @@ datas = [
     (os.path.join(project_root, "templates", "app.js"), "templates"),
     (os.path.join(project_root, "static", "logos"), "static/logos"),
     (os.path.join(project_root, "agents", "x_analyst.md"), "agents"),
+    (os.path.join(project_root, "agents", "liq_agent.md"), "agents"),
+    (os.path.join(project_root, "agents", "liq_skill.md"), "agents"),
+    (os.path.join(project_root, "agents", "anl_agent.md"), "agents"),
+    (os.path.join(project_root, "agents", "anl_skill.md"), "agents"),
+    (os.path.join(project_root, "agents", "pot_agent.md"), "agents"),
+    (os.path.join(project_root, "agents", "pot_skill.md"), "agents"),
+    (os.path.join(project_root, "agents", "pot_reflection.md"), "agents"),
+    (os.path.join(project_root, "agents", "pub_agent.md"), "agents"),
+    (os.path.join(project_root, "agents", "pub_skill.md"), "agents"),
 ]
 datas += collect_data_files("claw402", include_py_files=False)
 datas += collect_data_files("anthropic", include_py_files=False)
@@ -39,6 +48,11 @@ hiddenimports = (
         "services.heatmap_manager",
         "services.llm",
         "services.market_data",
+        "services.paper_trading",
+        "services.potential_analyzer",
+        "services.potential_scanner",
+        "services.pub_agent",
+        "services.square_publisher",
         "services.strategy_agent",
         "services.x_sentiment",
         "services.xai_chat",
@@ -48,7 +62,13 @@ hiddenimports = (
         "strategy.heatmap",
         "strategy.signals",
         "trading.execution",
+        "trading.executor",
+        "trading.exchange_api",
+        "trading.position_manager",
         "trading.risk",
+        "evolution.trajectory",
+        "evolution.reflection",
+        "evolution.evolve",
         "urllib3",
         "charset_normalizer",
         "idna",

@@ -24,7 +24,12 @@ from services.evolution import EvolutionEngine
 from services.heatmap_manager import HeatmapSnapshotManager
 from services.liquidation_maps import normalize_liquidation_map
 from services.llm import _as_dict, analyze_with_llm
-from services.market_data import MarketDataError, MarketDataRestrictedError, market_data_service
+from services.market_data import MarketDataError, MarketDataRestrictedError, compute_volatility, market_data_service
+from services.paper_trading import SharedPaperTrading
+from services.potential_analyzer import PotentialAnalyzer, analysis_allows_entry
+from services.potential_scanner import PotentialScanner, PotentialStore
+from services.pub_agent import PubAgent
+from services.square_publisher import SquarePublisher
 from services.strategy_agent import apply_llm_review, review_trade_with_llm
 from services.x_sentiment import get_service as get_x_service
 from services.xai_chat import get_chat_service as get_xai_chat
@@ -34,7 +39,9 @@ from state import AgentState
 from strategy.models import MarketSnapshot, RiskDecision, StrategyConfig, utc_now
 from strategy.signals import LiquidationContrarianSignalEngine
 from trading.execution import BinanceExecutionAdapter, PaperExecutionAdapter
+from trading.position_manager import DynamicPositionRules, atr_from_klines
 from trading.risk import RiskManager
+from evolution.evolve import PromptEvolutionEngine
 
 import sys
 if getattr(sys, "frozen", False):
@@ -58,11 +65,22 @@ evolution_engine = EvolutionEngine()
 risk_manager = RiskManager()
 paper_executor = PaperExecutionAdapter()
 binance_executor = BinanceExecutionAdapter()
+potential_store = PotentialStore()
+potential_scanner = PotentialScanner(potential_store)
+potential_analyzer = PotentialAnalyzer(potential_store)
+pub_agent = PubAgent(potential_store)
+square_publisher = SquarePublisher(potential_store)
+shared_paper = SharedPaperTrading(potential_store)
+prompt_evolution = PromptEvolutionEngine(potential_store)
+position_rules = DynamicPositionRules()
 worker_stop = threading.Event()
 worker_thread: threading.Thread | None = None
 worker_private_key = ""
 worker_llm_review_key = ""
 tick_lock = threading.Lock()
+scanner_stop = threading.Event()
+scanner_thread: threading.Thread | None = None
+scanner_lock = threading.Lock()
 
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,20}$")
 INTERVAL_RE = re.compile(r"^[0-9]+[mhdwM]$")
@@ -383,27 +401,10 @@ def market_binance_symbols():
 
 @app.route("/api/market/sentiment")
 def market_sentiment():
-    """Market fear & greed proxy. Derived from agent's last signal direction + heatmap intensity if available."""
-    snapshot = _as_dict(agent_state.last_snapshot)
-    sig = _as_dict(agent_state.last_signal)
-    # Default neutral
-    score = 50
-    action = (sig.get("action") if isinstance(sig, dict) else None) or "wait"
-    confidence = float((sig.get("confidence") if isinstance(sig, dict) else 0) or 0)
-    if action == "long":
-        score = int(55 + confidence * 30)
-    elif action == "short":
-        score = int(45 - confidence * 30)
-    # Adjust by funding rate
-    fr = snapshot.get("funding_rate")
     try:
-        if fr is not None:
-            score += int(float(fr) * 1000)
-    except Exception:
-        pass
-    score = max(5, min(95, score))
-    label = "极度贪婪" if score >= 75 else "贪婪" if score >= 55 else "中性" if score >= 45 else "恐惧" if score >= 25 else "极度恐惧"
-    return jsonify({"score": score, "label": label})
+        return jsonify(market_data_service.fear_greed())
+    except Exception as exc:
+        return jsonify({"error": str(exc), "source": "alternative.me"}), 502
 
 
 @app.route("/api/market/volatility")
@@ -411,18 +412,27 @@ def market_volatility():
     snapshot = _as_dict(agent_state.last_snapshot)
     if not snapshot:
         return jsonify({"coins": [], "error": "No real exchange market data loaded yet"}), 404
-    price = float(snapshot.get("price") or 0)
-    return jsonify({"coins": [{"symbol": snapshot.get("symbol"), "value": price, "change": None, "source": "exchange"}]})
+    market = _as_dict(snapshot.get("market"))
+    volatility = compute_volatility(market.get("klines") if isinstance(market.get("klines"), list) else [])
+    return jsonify({"coins": [{"symbol": snapshot.get("symbol"), "value": volatility, "source": "exchange_klines"}]})
 
 
 @app.route("/api/market/sectors")
 def market_sectors():
-    return jsonify({"sectors": [], "error": "No sector data provider configured"}), 501
+    try:
+        return jsonify({"sectors": market_data_service.sectors()})
+    except Exception as exc:
+        return jsonify({"sectors": [], "error": str(exc), "source": "coingecko"}), 502
 
 
 @app.route("/api/market/flows")
 def market_flows():
-    return jsonify({"flows": [], "error": "No exchange flow data provider configured"}), 501
+    try:
+        global_data = market_data_service.global_market()
+        eth = market_data_service.fetch_snapshot("ETHUSDT", exchange="binance", interval="1h", limit=24)
+        return jsonify({"global": global_data, "eth": eth, "source": "coingecko+binance"})
+    except Exception as exc:
+        return jsonify({"flows": [], "error": str(exc)}), 502
 
 
 # ===================== X (Twitter) sentiment =====================
@@ -951,6 +961,266 @@ def agent_config():
         return _json_error(str(exc))
 
 
+@app.route("/api/agents/config", methods=["GET", "POST"])
+def multi_agent_config():
+    if request.method == "GET":
+        return jsonify({
+            "agents": potential_store.all_agent_configs(redact=True),
+            "scanner": potential_store.get_scanner_config().to_dict(),
+            "trading": {
+                "mode": agent_state.config.safety_mode,
+                "live_enabled": agent_state.config.live_enabled,
+                "paper_seed_usd": agent_state.config.paper_seed_usd,
+            },
+        })
+    payload = request.get_json() or {}
+    agents = potential_store.update_agent_configs(payload.get("agents") or {})
+    scanner_cfg = potential_store.update_scanner_config(payload.get("scanner") or {}) if payload.get("scanner") else potential_store.get_scanner_config().to_dict()
+    trading_patch = payload.get("trading") or {}
+    if trading_patch:
+        patch = {}
+        if trading_patch.get("mode"):
+            patch["safety_mode"] = trading_patch.get("mode")
+        if "live_enabled" in trading_patch:
+            patch["live_enabled"] = bool(trading_patch.get("live_enabled"))
+        agent_state.update_config(patch)
+    return jsonify({"agents": agents, "scanner": scanner_cfg, "trading": {"mode": agent_state.config.safety_mode, "live_enabled": agent_state.config.live_enabled}})
+
+
+@app.route("/api/scanner/status")
+def scanner_status():
+    status = potential_scanner.status()
+    agent_state.record_scanner_status(status)
+    return jsonify(status)
+
+
+@app.route("/api/scanner/start", methods=["POST"])
+def scanner_start():
+    global scanner_thread
+    if scanner_thread and scanner_thread.is_alive():
+        return jsonify(potential_scanner.status())
+    scanner_stop.clear()
+    potential_scanner.set_running(True)
+    scanner_thread = threading.Thread(target=_scanner_loop, daemon=True)
+    scanner_thread.start()
+    agent_state.add_event("scanner", "started", module="pot", action="scanner.start")
+    status = potential_scanner.status()
+    agent_state.record_scanner_status(status)
+    return jsonify(status)
+
+
+@app.route("/api/scanner/stop", methods=["POST"])
+def scanner_stop_route():
+    scanner_stop.set()
+    potential_scanner.set_running(False)
+    agent_state.add_event("scanner", "stopped", module="pot", action="scanner.stop")
+    status = potential_scanner.status()
+    agent_state.record_scanner_status(status)
+    return jsonify(status)
+
+
+@app.route("/api/scanner/run", methods=["POST"])
+def scanner_run():
+    result, status = run_scanner_tick(manual=True)
+    return jsonify(result), status
+
+
+@app.route("/api/scanner/watchlist")
+def scanner_watchlist():
+    status = request.args.get("status")
+    return jsonify({"watchlist": potential_store.list_watchlist(status=status, limit=500), "status": potential_scanner.status()})
+
+
+@app.route("/api/scanner/watchlist/<symbol>", methods=["GET", "POST", "DELETE"])
+def scanner_watchlist_symbol(symbol: str):
+    symbol = str(symbol or "").upper().replace("/", "")
+    if symbol and not symbol.endswith("USDT"):
+        symbol += "USDT"
+    if request.method == "GET":
+        item = potential_store.get_watchlist_item(symbol)
+        if not item:
+            return _json_error("watchlist item not found", 404)
+        return jsonify({"item": item, "ticks": potential_store.watchlist_ticks(symbol, 100)})
+    if request.method == "DELETE":
+        potential_store.remove_watchlist_item(symbol, "manual")
+        return jsonify({"removed": True, "symbol": symbol})
+    try:
+        ticker = (potential_scanner.client.tickers_24hr().get(symbol) or {})
+        premium = {item.get("symbol"): item for item in potential_scanner.client.premium_index()}
+        fr = float((premium.get(symbol) or {}).get("lastFundingRate") or 0)
+        price = float(ticker.get("lastPrice") or 0)
+        volume = float(ticker.get("quoteVolume") or 0)
+        hist = potential_scanner.client.open_interest_hist(symbol, period="1h", limit=2)
+        oi_values = []
+        for row in hist:
+            raw = row.get("sumOpenInterestValue") if row.get("sumOpenInterestValue") is not None else row.get("sumOpenInterest")
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                oi_values.append(value)
+        item = potential_store.upsert_watchlist_item(symbol, fr=fr, oi=oi_values[-1] if oi_values else 0, volume=volume, price=price)
+        return jsonify({"item": item})
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
+@app.route("/api/scanner/signals")
+def scanner_signals():
+    limit, _ = _parse_size(request.args.get("limit", 100), 1, 500)
+    return jsonify({"signals": potential_store.list_signals(limit or 100, request.args.get("status")), "status": potential_scanner.status()})
+
+
+@app.route("/api/scanner/signals/<int:signal_id>")
+def scanner_signal_detail(signal_id: int):
+    signal = potential_store.get_signal(signal_id)
+    if not signal:
+        return _json_error("signal not found", 404)
+    return jsonify({"signal": signal})
+
+
+@app.route("/api/scanner/signals/<int:signal_id>/analyze", methods=["POST"])
+def scanner_analyze_signal(signal_id: int):
+    try:
+        payload = request.get_json() or {}
+        analysis = potential_analyzer.analyze_signal(signal_id, user_prompt=str(payload.get("prompt") or ""))
+        signal = potential_store.get_signal(signal_id)
+        if signal:
+            status = "trading" if shared_paper.open_orders("pot") and any(str(o.get("symbol") or "").upper() == str(signal.get("symbol") or "").upper() for o in shared_paper.open_orders("pot")) else "analyzing"
+            potential_store.mark_watchlist_status(str(signal.get("symbol") or ""), status, ai_analysis=analysis, signal_id=signal_id)
+        return jsonify({"analysis": analysis, "signal": potential_store.get_signal(signal_id)})
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
+@app.route("/api/scanner/signals/<int:signal_id>/paper-entry", methods=["POST"])
+def scanner_signal_paper_entry(signal_id: int):
+    try:
+        signal = potential_store.get_signal(signal_id)
+        if not signal:
+            return _json_error("signal not found", 404)
+        analysis = signal.get("ai_analysis") if isinstance(signal.get("ai_analysis"), dict) else None
+        order = _open_pot_paper_position(signal, analysis, manual=True)
+        if not order:
+            return _json_error("paper entry was not opened; check price, position limits, or entry confirmation mode", 400)
+        potential_store.mark_watchlist_status(str(signal.get("symbol") or ""), "trading", ai_analysis=analysis, signal_id=signal_id)
+        return jsonify({"order": order, "positions": shared_paper.open_orders("pot")})
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
+@app.route("/api/scanner/positions")
+def scanner_positions():
+    return jsonify({"positions": shared_paper.open_orders("pot")})
+
+
+@app.route("/api/scanner/positions/<int:position_id>/review", methods=["POST"])
+def scanner_review_position(position_id: int):
+    try:
+        position = shared_paper.get_order(position_id)
+        payload = request.get_json() or {}
+        review = potential_analyzer.review_position(position, payload.get("market_context") or {})
+        if review.get("action") == "close":
+            price = float((payload.get("market_context") or {}).get("price") or position.get("entry_price") or 0)
+            shared_paper.close_order(position_id, price, "ai_decision", reduce_pct=100)
+        elif review.get("action") == "reduce":
+            price = float((payload.get("market_context") or {}).get("price") or position.get("entry_price") or 0)
+            shared_paper.close_order(position_id, price, "ai_reduce", reduce_pct=float(review.get("reduce_pct") or 50))
+        return jsonify({"review": review, "position": shared_paper.get_order(position_id)})
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
+@app.route("/api/publisher/generate/<int:signal_id>", methods=["POST"])
+def publisher_generate(signal_id: int):
+    try:
+        payload = request.get_json() or {}
+        result = pub_agent.generate_for_signal(signal_id, mode=str(payload.get("mode") or "draft"))
+        return jsonify(result)
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
+@app.route("/api/publisher/drafts")
+def publisher_drafts():
+    return jsonify({"drafts": potential_store.list_drafts()})
+
+
+@app.route("/api/publisher/drafts/<int:draft_id>/publish", methods=["POST"])
+def publisher_publish(draft_id: int):
+    try:
+        payload = request.get_json() or {}
+        cfg = potential_store.get_scanner_config()
+        api_key = str(payload.get("square_api_key") or cfg.square_api_key or "").strip()
+        if payload.get("square_api_key"):
+            potential_store.update_scanner_config({"square_api_key": api_key})
+        result = square_publisher.publish(draft_id, api_key, force=bool(payload.get("force")))
+        return jsonify(result), 200 if result.get("published") else 400
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
+@app.route("/api/publisher/history")
+def publisher_history():
+    return jsonify({"history": potential_store.list_drafts(200)})
+
+
+@app.route("/api/trading/config", methods=["GET", "POST"])
+def trading_config():
+    if request.method == "GET":
+        return jsonify({"mode": agent_state.config.safety_mode, "live_enabled": agent_state.config.live_enabled})
+    payload = request.get_json() or {}
+    patch = {}
+    if payload.get("mode"):
+        patch["safety_mode"] = payload.get("mode")
+    if "live_enabled" in payload:
+        patch["live_enabled"] = bool(payload.get("live_enabled"))
+    config = agent_state.update_config(patch)
+    return jsonify({"mode": config.safety_mode, "live_enabled": config.live_enabled})
+
+
+@app.route("/api/trading/paper/orders")
+def trading_paper_orders():
+    return jsonify({"orders": shared_paper.list_orders(request.args.get("agent_type"), 500)})
+
+
+@app.route("/api/trading/paper/stats")
+def trading_paper_stats():
+    return jsonify({"stats": shared_paper.stats(request.args.get("agent_type"))})
+
+
+@app.route("/api/trading/paper/equity-curve")
+def trading_paper_equity():
+    return jsonify({"curve": shared_paper.equity_curve(request.args.get("agent_type"))})
+
+
+@app.route("/api/evolution/trigger/<agent_type>", methods=["POST"])
+def evolution_trigger(agent_type: str):
+    try:
+        payload = request.get_json() or {}
+        result = prompt_evolution.trigger(agent_type, trigger=str(payload.get("trigger") or "manual"))
+        return jsonify({"evolution": result})
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
+@app.route("/api/evolution/log/<agent_type>")
+def evolution_log(agent_type: str):
+    try:
+        return jsonify({"logs": prompt_evolution.logs(agent_type)})
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
+@app.route("/api/evolution/current/<agent_type>")
+def evolution_current(agent_type: str):
+    try:
+        return jsonify({"current": prompt_evolution.current(agent_type)})
+    except Exception as exc:
+        return _json_error(str(exc), 400)
+
+
 @app.route("/api/agent/tick", methods=["POST"])
 def agent_tick():
     payload = request.get_json() or {}
@@ -1219,6 +1489,188 @@ def _worker_loop():
         agent_state.set_next_tick_due(wait_seconds)
         worker_stop.wait(wait_seconds)
     agent_state.set_running(False)
+
+
+def _scanner_loop():
+    consecutive_errors = 0
+    max_consecutive_errors = 10
+    while not scanner_stop.is_set():
+        try:
+            result, status = run_scanner_tick(manual=False)
+            if status >= 400:
+                raise RuntimeError(result.get("error") or f"scanner tick failed with HTTP {status}")
+            consecutive_errors = 0
+        except Exception as exc:
+            consecutive_errors += 1
+            agent_state.add_event("error", f"POT scanner [{consecutive_errors}/{max_consecutive_errors}] {exc}", module="pot", action="scanner.loop")
+            if consecutive_errors >= max_consecutive_errors:
+                potential_scanner.set_running(False)
+                agent_state.add_event("error", "POT scanner stopped after repeated failures", module="pot", action="scanner.loop")
+                break
+        cfg = potential_store.get_scanner_config()
+        wait_seconds = max(10, cfg.poll_seconds)
+        if consecutive_errors:
+            wait_seconds = min(300, wait_seconds * (2 ** min(consecutive_errors, 5)))
+        potential_scanner.set_next_run(wait_seconds)
+        scanner_stop.wait(wait_seconds)
+    potential_scanner.set_running(False)
+
+
+def run_scanner_tick(*, manual: bool = False) -> tuple[dict[str, Any], int]:
+    if not scanner_lock.acquire(blocking=False):
+        return {"error": "scanner tick already running", "status": potential_scanner.status()}, 409
+    try:
+        result = potential_scanner.scan_once(manual=manual)
+        _check_pot_positions(result)
+        _auto_process_pot_signals(result)
+        agent_state.add_event("scanner", result.get("status", "ok"), {
+            "checked": result.get("checked"),
+            "inserted": result.get("inserted"),
+            "watch_candidates": result.get("watch_candidates"),
+            "watchlist_updates": result.get("watchlist_updates"),
+        }, module="pot", action="scanner.tick")
+        status = potential_scanner.status()
+        agent_state.record_scanner_status(status)
+        return {"result": result, "status": status}, 200
+    except Exception as exc:
+        agent_state.add_event("error", str(exc), module="pot", action="scanner.tick")
+        status = potential_scanner.status()
+        agent_state.record_scanner_status(status)
+        return {"error": str(exc), "status": status}, 502
+    finally:
+        scanner_lock.release()
+
+
+def _auto_process_pot_signals(scan_result: dict[str, Any]) -> None:
+    cfg = potential_store.get_scanner_config()
+    for signal in scan_result.get("signals") or []:
+        signal_id = signal.get("id")
+        if not signal_id:
+            continue
+        analysis = None
+        if cfg.auto_analyze and float(signal.get("potential_score") or 0) >= cfg.min_score_for_analysis:
+            try:
+                analysis = potential_analyzer.analyze_signal(int(signal_id))
+            except Exception as exc:
+                agent_state.add_event("error", f"POT analysis failed for {signal.get('symbol')}: {exc}", module="pot", action="analysis.auto")
+        if cfg.auto_trade and analysis and analysis_allows_entry(analysis) and agent_state.config.safety_mode == "paper":
+            order = _open_pot_paper_position(signal, analysis)
+            if order:
+                potential_store.mark_watchlist_status(str(signal.get("symbol") or ""), "trading", ai_analysis=analysis)
+
+
+def _open_pot_paper_position(signal: dict[str, Any], analysis: dict[str, Any] | None = None, *, manual: bool = False) -> dict[str, Any] | None:
+    cfg = potential_store.get_scanner_config()
+    open_count = len(shared_paper.open_orders("pot"))
+    if open_count >= cfg.max_concurrent_positions:
+        agent_state.add_event(
+            "risk",
+            "POT max concurrent positions reached",
+            {"open_count": open_count, "limit": cfg.max_concurrent_positions, "symbol": signal.get("symbol")},
+            module="pot",
+            action="trade.paper",
+        )
+        return None
+    if not manual and cfg.entry_confirmation_mode != "aggressive":
+        agent_state.add_event(
+            "scanner",
+            "POT entry confirmation required",
+            {"mode": cfg.entry_confirmation_mode, "symbol": signal.get("symbol")},
+            module="pot",
+            action="trade.paper",
+        )
+        return None
+    symbol = str(signal.get("symbol") or "").upper()
+    price = float(signal.get("price") or 0)
+    if not symbol or price <= 0:
+        return None
+    try:
+        klines = potential_scanner.client.klines(symbol, interval="1h", limit=60)
+        atr = atr_from_klines(klines, period=14)
+    except Exception:
+        atr = 0
+    stop = position_rules.initial_stop(price, atr, side="long")
+    order = shared_paper.open_order(
+        agent_type="pot",
+        symbol=symbol,
+        side="long",
+        entry_price=price,
+        notional_usdt=cfg.trading_notional_usdt,
+        stop_price=stop,
+        signal_id=int(signal.get("id") or 0) or None,
+        trajectory_id=str(signal.get("id") or ""),
+        slippage_pct=cfg.paper_slippage_pct,
+    )
+    agent_state.add_event(
+        "order",
+        "POT paper entry opened",
+        {"symbol": symbol, "requested_entry": price, "entry": order.get("entry_price"), "stop": stop, "slippage_pct": cfg.paper_slippage_pct},
+        module="pot",
+        action="trade.paper",
+    )
+    return order
+
+
+def _check_pot_positions(scan_result: dict[str, Any] | None = None) -> None:
+    positions = shared_paper.open_orders("pot")
+    if not positions:
+        return
+    tickers = {}
+    premium_items = {}
+    try:
+        tickers = potential_scanner.client.tickers_24hr()
+    except Exception as exc:
+        agent_state.add_event("error", f"POT ticker load failed during position check: {exc}", module="pot", action="position.check")
+    try:
+        premium_items = {item.get("symbol"): item for item in potential_scanner.client.premium_index()}
+    except Exception as exc:
+        agent_state.add_event("error", f"POT premiumIndex load failed during position check: {exc}", module="pot", action="position.check")
+    for position in positions:
+        symbol = str(position.get("symbol") or "").upper()
+        try:
+            ticker = tickers.get(symbol) or {}
+            price = float(ticker.get("lastPrice") or position.get("entry_price") or 0)
+            klines = potential_scanner.client.klines(symbol, interval="1h", limit=60)
+            atr = atr_from_klines(klines, period=14)
+            new_stop = position_rules.trailing_stop(
+                price,
+                atr,
+                float(position.get("trailing_stop") or position.get("stop_price") or 0),
+                side="long",
+                entry_price=float(position.get("entry_price") or 0),
+            )
+            updated = shared_paper.update_mark(int(position["id"]), price, trailing_stop=new_stop)
+            oi_declining = _pot_oi_declining(symbol)
+            context = {
+                "price": price,
+                "fr_current": float((premium_items.get(symbol) or {}).get("lastFundingRate") or -1),
+                "volume_24h": float(ticker.get("quoteVolume") or 0),
+                "oi_declining": oi_declining,
+            }
+            reason = position_rules.exit_reason(updated, context)
+            if reason:
+                reduce_pct = 50 if reason == "fr_flip" else 100
+                shared_paper.close_order(int(position["id"]), price, reason, reduce_pct=reduce_pct)
+        except Exception as exc:
+            agent_state.add_event("error", f"POT position check failed for {symbol}: {exc}", module="pot", action="position.check")
+
+
+def _pot_oi_declining(symbol: str) -> bool:
+    hist = potential_scanner.client.open_interest_hist(symbol, period="1h", limit=12)
+    values = []
+    for item in hist:
+        raw = item.get("sumOpenInterestValue") if item.get("sumOpenInterestValue") is not None else item.get("sumOpenInterest")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            values.append(value)
+    if len(values) < 12:
+        return False
+    first = sum(values[:6]) / 6
+    second = sum(values[6:]) / 6
+    return second < first
 
 
 def run_agent_tick(payload: dict[str, Any] | None = None, *, allow_worker_key: bool = False) -> tuple[dict[str, Any], int]:

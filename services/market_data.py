@@ -31,6 +31,8 @@ class BinanceMarketDataService:
     BINANCE_BASE_URL = "https://fapi.binance.com"
     OKX_BASE_URL = "https://www.okx.com"
     BYBIT_BASE_URL = "https://api.bybit.com"
+    COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+    FNG_BASE_URL = "https://api.alternative.me"
 
     def __init__(self, urlopen_fn: Callable[..., Any] = urlopen):
         self._urlopen = urlopen_fn
@@ -77,6 +79,47 @@ class BinanceMarketDataService:
             })
         result.sort(key=lambda item: item["symbol"])
         return result
+
+    def global_market(self) -> dict[str, Any]:
+        data = self._get(self.COINGECKO_BASE_URL, "/global", {}, "CoinGecko")
+        global_data = data.get("data") if isinstance(data, dict) else {}
+        total_cap = global_data.get("total_market_cap") if isinstance(global_data, dict) else {}
+        total_vol = global_data.get("total_volume") if isinstance(global_data, dict) else {}
+        return {
+            "source": "coingecko",
+            "total_market_cap_usd": _to_float((total_cap or {}).get("usd")),
+            "total_volume_usd": _to_float((total_vol or {}).get("usd")),
+            "market_cap_change_percentage_24h_usd": _to_float(global_data.get("market_cap_change_percentage_24h_usd")),
+            "btc_dominance": _to_float((global_data.get("market_cap_percentage") or {}).get("btc")),
+            "eth_dominance": _to_float((global_data.get("market_cap_percentage") or {}).get("eth")),
+        }
+
+    def fear_greed(self) -> dict[str, Any]:
+        data = self._get(self.FNG_BASE_URL, "/fng/", {}, "Alternative.me")
+        rows = data.get("data") if isinstance(data, dict) else []
+        row = rows[0] if isinstance(rows, list) and rows else {}
+        return {
+            "source": "alternative.me",
+            "value": int(_to_float(row.get("value"))),
+            "classification": row.get("value_classification") or "",
+            "timestamp": row.get("timestamp"),
+        }
+
+    def sectors(self, limit: int = 12) -> list[dict[str, Any]]:
+        data = self._get(self.COINGECKO_BASE_URL, "/coins/categories", {}, "CoinGecko")
+        rows = data if isinstance(data, list) else []
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            out.append({
+                "name": row.get("name") or row.get("id"),
+                "market_cap": _to_float(row.get("market_cap")),
+                "market_cap_change_24h": _to_float(row.get("market_cap_change_24h")),
+                "volume_24h": _to_float(row.get("volume_24h")),
+            })
+        out.sort(key=lambda item: abs(item.get("market_cap_change_24h") or 0), reverse=True)
+        return out[:max(1, min(int(limit or 12), 50))]
 
     def _fetch_binance(self, symbol: str, interval: str, limit: int) -> dict[str, Any]:
         symbol = _clean_symbol(symbol)
@@ -299,6 +342,19 @@ class BinanceMarketDataService:
             "close_time": open_time,
             "quote_volume": _to_float(row[6]),
         }
+
+
+def compute_volatility(klines: list[dict[str, Any]], window: int = 24) -> float:
+    returns = []
+    for idx in range(1, len(klines or [])):
+        prev = _to_float((klines[idx - 1] or {}).get("close"))
+        curr = _to_float((klines[idx] or {}).get("close"))
+        if prev > 0:
+            returns.append((curr - prev) / prev)
+    if len(returns) < max(2, int(window or 24)):
+        return 0.0
+    recent = returns[-int(window):]
+    return round((sum(r * r for r in recent) / len(recent)) ** 0.5 * 100, 4)
 
 
 market_data_service = BinanceMarketDataService()

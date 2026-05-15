@@ -22,6 +22,18 @@ const state = {
   lastDiagnostics: null,
   lastReplay: null,
   activeHeatmapSnapshot: null,
+  scannerStatus: null,
+  scannerSignals: [],
+  scannerWatchlist: [],
+  selectedPotSignal: null,
+  pubDrafts: [],
+  paperStats: null,
+  paperOrders: [],
+  tradingAgentFilter: '',
+  agentConfigs: {},
+  marketExtras: {},
+  eventFilter: '',
+  perfMetric: 'pnl',
 };
 
 function setText(id, value) {
@@ -54,6 +66,16 @@ function signedPct(value) {
   if (value == null || Number.isNaN(+value)) return '-';
   const n = +value;
   return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+function moneyCompact(value, digits = 2) {
+  if (value == null || Number.isNaN(+value)) return '-';
+  const n = +value;
+  if (Math.abs(n) >= 1e12) return (n / 1e12).toFixed(digits) + 'T';
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(digits) + 'B';
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(digits) + 'M';
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(digits) + 'K';
+  return n.toFixed(digits);
 }
 
 function orderSide(order) {
@@ -228,6 +250,11 @@ function navTo(page) {
   setTimeout(() => Object.values(state.charts).forEach(c => c && c.resize && c.resize()), 80);
   if (page === 'settings') renderTrustSettings(state.lastStatus?.config || {});
   const hook = pageHooks[page]; if (hook) hook();
+}
+
+function activePageName() {
+  const active = qs('.page.active');
+  return active?.id?.replace(/^page-/, '') || 'home';
 }
 
 // ============== ECHARTS HELPERS ==============
@@ -851,14 +878,28 @@ function renderDashCharts() {
     const pnl_is_pct = orders.length && orders[0].pnl_pct != null;
     let cum = 0;
     const data = orders.length ? orders.map(o => { cum += ((+o.pnl_pct || +o.pnl_usd || 0) / (pnl_is_pct ? 100 : 1)) * (pnl_is_pct ? sizeUsd : 1); return [new Date(o.timestamp).getTime(), cum]; }) : [];
-    if (data.length) {
+    let chartData = data;
+    let yName = 'USDT';
+    if (state.perfMetric === 'roi') {
+      const base = +state.lastStatus?.account?.balance || sizeUsd || 1000;
+      chartData = data.map(([t, v]) => [t, base ? (v / base) * 100 : 0]);
+      yName = '%';
+    } else if (state.perfMetric === 'drawdown') {
+      let peak = 0;
+      chartData = data.map(([t, v]) => {
+        peak = Math.max(peak, v);
+        return [t, peak ? ((v - peak) / Math.abs(peak)) * 100 : 0];
+      });
+      yName = '%';
+    }
+    if (chartData.length) {
       perfChart.setOption({
         grid: { left: 50, right: 14, top: 14, bottom: 28 },
         tooltip: { trigger: 'axis', ...TT },
         xAxis: { type: 'time', ...AXIS },
-        yAxis: { type: 'value', ...AXIS },
+        yAxis: { type: 'value', name: yName, ...AXIS },
         graphic: [],
-        series: [{ type: 'line', smooth: true, showSymbol: false, data, lineStyle: { color: '#6c5ce7', width: 2 }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(108,92,231,.2)' }, { offset: 1, color: 'rgba(108,92,231,0)' }] } } }],
+        series: [{ type: 'line', smooth: true, showSymbol: false, data: chartData, lineStyle: { color: state.perfMetric === 'drawdown' ? '#e74c3c' : '#6c5ce7', width: 2 }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(108,92,231,.2)' }, { offset: 1, color: 'rgba(108,92,231,0)' }] } } }],
       }, true);
     } else {
       perfChart.setOption({
@@ -1683,8 +1724,13 @@ function renderHeatmapHistory() {
 // ============== MARKET PAGE ==============
 pageHooks.market = function () {
   if (!state.keysReady) return;
+  if (!state.marketExtras.loading && (!state.marketExtras.loadedAt || Date.now() - state.marketExtras.loadedAt > 300000)) loadMarketExtras();
   const snap = state.lastStatus?.last_snapshot || {};
   const market = snap.market || {};
+  const extras = state.marketExtras || {};
+  const globalMarket = extras.flows?.global || {};
+  const eth = extras.flows?.eth || {};
+  const fearGreed = extras.sentiment || {};
   const symbol = slashSymbol(snap.symbol || selectedHeaderSymbol());
   const labels = qsa('#page-market .kpi-label');
   if (labels[0]) labels[0].textContent = `${symbol} 价格`;
@@ -1693,15 +1739,17 @@ pageHooks.market = function () {
     $('mktBtcChg').textContent = signedPct(market.change_24h_pct);
     $('mktBtcChg').className = (+market.change_24h_pct || 0) >= 0 ? 'kpi-sub pos' : 'kpi-sub neg';
   }
-  if ($('mktEthPrice')) $('mktEthPrice').textContent = symbol.startsWith('ETH') && snap.price ? '$' + fmt.price(snap.price, 2) : '-';
-  if ($('mktEthChg')) $('mktEthChg').textContent = symbol.startsWith('ETH') ? signedPct(market.change_24h_pct) : '-';
-  if ($('mktCap')) $('mktCap').textContent = '-';
+  if ($('mktEthPrice')) $('mktEthPrice').textContent = eth.price ? '$' + fmt.price(eth.price, 2) : (symbol.startsWith('ETH') && snap.price ? '$' + fmt.price(snap.price, 2) : '-');
+  if ($('mktEthChg')) $('mktEthChg').textContent = eth.change_24h_pct != null ? signedPct(eth.change_24h_pct) : (symbol.startsWith('ETH') ? signedPct(market.change_24h_pct) : '-');
+  if ($('mktCap')) $('mktCap').textContent = globalMarket.total_market_cap_usd ? fmt.num(globalMarket.total_market_cap_usd / 1e12, 2) : '-';
   if ($('mktBtcPrice') && (snap.symbol || '').startsWith('BTC')) $('mktBtcPrice').textContent = '$' + fmt.price(snap.price, 2);
   if ($('mktBtcChg')) $('mktBtcChg').textContent = market.change_24h_pct == null ? '—' : ((+market.change_24h_pct >= 0 ? '+' : '') + fmt.pct(market.change_24h_pct));
-  if ($('mktVol')) $('mktVol').textContent = market.volume_24h_quote ? fmt.num(+market.volume_24h_quote / 1e9, 2) : '—';
+  if ($('mktVol')) $('mktVol').textContent = globalMarket.total_volume_usd ? fmt.num(globalMarket.total_volume_usd / 1e9, 2) : (market.volume_24h_quote ? fmt.num(+market.volume_24h_quote / 1e9, 2) : '—');
+  if ($('mktFearGreed')) $('mktFearGreed').textContent = fearGreed.value != null ? String(fearGreed.value) : '—';
   if ($('mktVolatility')) {
     const high = +market.high_24h || 0, low = +market.low_24h || 0, price = +snap.price || 0;
-    $('mktVolatility').textContent = price && high && low ? fmt.num(((high - low) / price) * 100, 2) : '—';
+    const apiVol = extras.volatility?.coins?.[0]?.value;
+    $('mktVolatility').textContent = apiVol != null ? fmt.num(apiVol, 2) : (price && high && low ? fmt.num(((high - low) / price) * 100, 2) : '—');
   }
   const priceChart = getChart('mktPriceChart');
   if (priceChart) {
@@ -1730,7 +1778,7 @@ pageHooks.market = function () {
 
   const sentChart = getChart('mktSentimentGauge');
   if (sentChart) {
-    const sentimentScore = state.lastStatus?.last_signal?.confidence ? Math.round(state.lastStatus.last_signal.confidence * 100) : 50;
+    const sentimentScore = fearGreed.value != null ? +fearGreed.value : (state.lastStatus?.last_signal?.confidence ? Math.round(state.lastStatus.last_signal.confidence * 100) : 50);
     sentChart.setOption({
       series: [{
         type: 'gauge', startAngle: 180, endAngle: 0, min: 0, max: 100,
@@ -1745,14 +1793,15 @@ pageHooks.market = function () {
 
   const flowChart = getChart('mktFlowChart');
   if (flowChart) {
-    const cats = [snap.symbol || '—'];
+    const cats = ['总量', eth.symbol || 'ETHUSDT', snap.symbol || '—'];
+    const flowData = [+(globalMarket.total_volume_usd || 0), +(eth.volume_24h_quote || 0), +(market.volume_24h_quote || 0)];
     flowChart.setOption({
       grid: { left: 40, right: 14, top: 10, bottom: 28 },
       tooltip: { trigger: 'axis', ...TT },
       xAxis: { type: 'category', data: cats, ...AXIS },
       yAxis: { type: 'value', ...AXIS },
       series: [
-        { type: 'bar', data: [+(market.volume_24h_quote || 0)], itemStyle: { color: '#00b894' }, barWidth: '35%' },
+        { type: 'bar', data: flowData, itemStyle: { color: '#00b894' }, barWidth: '35%' },
       ],
     }, true);
   }
@@ -1760,26 +1809,71 @@ pageHooks.market = function () {
 
   const volChart = getChart('mktVolChart');
   if (volChart) {
-    volChart.setOption({
-      grid: { left: 40, right: 14, top: 14, bottom: 28 },
-      xAxis: { type: 'time', ...AXIS, show: false },
-      yAxis: { type: 'value', ...AXIS, show: false },
-      series: [{ type: 'line', data: [] }],
-      graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无波动率数据', fontSize: 13, fill: '#9ea2ab', fontFamily: 'inherit' } }],
-    }, true);
+    const volatility = extras.volatility?.coins || [];
+    if (volatility.length) {
+      volChart.setOption({
+        grid: { left: 45, right: 14, top: 14, bottom: 28 },
+        xAxis: { type: 'category', data: volatility.map(v => v.symbol || symbol), ...AXIS },
+        yAxis: { type: 'value', ...AXIS },
+        graphic: [],
+        series: [{ type: 'bar', data: volatility.map(v => +(v.value || 0)), itemStyle: { color: '#6c5ce7' }, barWidth: '35%' }],
+      }, true);
+    } else {
+      volChart.setOption({
+        grid: { left: 40, right: 14, top: 14, bottom: 28 },
+        xAxis: { type: 'time', ...AXIS, show: false },
+        yAxis: { type: 'value', ...AXIS, show: false },
+        series: [{ type: 'line', data: [] }],
+        graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无波动率数据', fontSize: 13, fill: '#9ea2ab', fontFamily: 'inherit' } }],
+      }, true);
+    }
   }
 };
 
+async function loadMarketExtras() {
+  state.marketExtras.loading = true;
+  try {
+    const [sentiment, sectors, flows, volatility] = await Promise.allSettled([
+      api('GET', '/api/market/sentiment'),
+      api('GET', '/api/market/sectors'),
+      api('GET', '/api/market/flows'),
+      api('GET', '/api/market/volatility'),
+    ]);
+    state.marketExtras = {
+      loading: false,
+      loadedAt: Date.now(),
+      sentiment: sentiment.status === 'fulfilled' ? sentiment.value : {},
+      sectors: sectors.status === 'fulfilled' ? sectors.value : {},
+      flows: flows.status === 'fulfilled' ? flows.value : {},
+      volatility: volatility.status === 'fulfilled' ? volatility.value : {},
+    };
+    if (activePageName() === 'market') pageHooks.market?.();
+  } catch {
+    state.marketExtras.loading = false;
+    state.marketExtras.loadedAt = Date.now();
+  }
+}
+
 function renderMarketDerivedPanels(snap, market) {
   const symbol = slashSymbol(snap?.symbol || selectedHeaderSymbol());
+  const extras = state.marketExtras || {};
+  const globalMarket = extras.flows?.global || {};
+  const fearGreed = extras.sentiment || {};
+  const sectorsData = extras.sectors?.sectors || [];
   const kpiSubs = qsa('#page-market .kpi-sub');
-  if (kpiSubs[2]) { kpiSubs[2].className = 'kpi-sub'; kpiSubs[2].textContent = '未配置总市值 provider'; }
-  if (kpiSubs[3]) { kpiSubs[3].className = 'kpi-sub'; kpiSubs[3].textContent = '来自交易所 ticker'; }
-  if (kpiSubs[4]) { kpiSubs[4].className = 'kpi-sub'; kpiSubs[4].textContent = '未配置恐惧贪婪 provider'; }
-  if (kpiSubs[5]) { kpiSubs[5].className = 'kpi-sub'; kpiSubs[5].textContent = '由 24h 高低价计算'; }
+  if (kpiSubs[2]) { kpiSubs[2].className = 'kpi-sub'; kpiSubs[2].textContent = globalMarket.market_cap_change_percentage_24h_usd == null ? 'CoinGecko global' : signedPct(globalMarket.market_cap_change_percentage_24h_usd); }
+  if (kpiSubs[3]) { kpiSubs[3].className = 'kpi-sub'; kpiSubs[3].textContent = 'CoinGecko total volume / exchange ticker'; }
+  if (kpiSubs[4]) { kpiSubs[4].className = 'kpi-sub'; kpiSubs[4].textContent = fearGreed.classification || 'Alternative.me'; }
+  if (kpiSubs[5]) { kpiSubs[5].className = 'kpi-sub'; kpiSubs[5].textContent = '由交易所 K 线收益率计算'; }
   const sectors = $('mktSectors');
   if (sectors) {
-    sectors.innerHTML = `<div style="text-align:center;color:var(--text-3);padding:20px;background:var(--surface-2);border-radius:8px">未配置真实板块轮动数据源，已停止展示演示板块数据。</div>`;
+    sectors.innerHTML = sectorsData.length ? sectorsData.slice(0, 8).map(item => {
+      const change = +(item.market_cap_change_24h || 0);
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 10px;background:var(--surface-2);border-radius:8px;font-size:12px">
+        <span>${escapeHtml(item.name || '-')}</span>
+        <span class="${change >= 0 ? 'pos' : 'neg'}" style="font-family:var(--mono);font-weight:700">${signedPct(change)}</span>
+      </div>`;
+    }).join('') : `<div style="text-align:center;color:var(--text-3);padding:20px;background:var(--surface-2);border-radius:8px">暂无 CoinGecko 板块数据</div>`;
   }
 
   const sentimentCard = $('mktSentimentGauge')?.parentElement;
@@ -1789,14 +1883,15 @@ function renderMarketDerivedPanels(snap, market) {
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">多空比</span><span style="font-family:var(--mono);font-weight:600">${market.long_short_ratio ?? '-'}</span></div>
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">资金费率</span><span style="font-family:var(--mono);font-weight:600">${market.funding_rate == null ? '-' : signedPct(+market.funding_rate * 100)}</span></div>
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">持仓量变化</span><span style="font-family:var(--mono);font-weight:600">${market.open_interest_change_pct == null ? '-' : signedPct(market.open_interest_change_pct)}</span></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">Fear & Greed</span><span style="font-family:var(--mono);font-weight:600">${fearGreed.value == null ? '-' : `${fearGreed.value} / ${escapeHtml(fearGreed.classification || '')}`}</span></div>
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px"><span style="color:var(--text-2)">数据源</span><span style="font-family:var(--mono);font-weight:600">${escapeHtml(market.exchange || market.source || '-')}</span></div>`;
   }
 
   const flowGrid = $('mktFlowChart')?.nextElementSibling;
   if (flowGrid) {
     flowGrid.innerHTML = `
-      <div style="padding:8px;background:var(--green-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">24h 成交额</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--green)">${market.volume_24h_quote ? fmt.num(market.volume_24h_quote, 2) : '-'}</div></div>
-      <div style="padding:8px;background:var(--red-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">净流入/流出</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red)">未配置 provider</div></div>`;
+      <div style="padding:8px;background:var(--green-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">全市场 24h 成交额</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--green)">${globalMarket.total_volume_usd ? moneyCompact(globalMarket.total_volume_usd) : '-'}</div></div>
+      <div style="padding:8px;background:var(--red-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">BTC/ETH 市值占比</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red)">${globalMarket.btc_dominance == null ? '-' : `${fmt.num(globalMarket.btc_dominance, 1)}% / ${fmt.num(globalMarket.eth_dominance, 1)}%`}</div></div>`;
   }
 
   const moversBody = qs('#page-market table.tbl tbody');
@@ -1809,42 +1904,6 @@ function renderMarketDerivedPanels(snap, market) {
     </tr>` : '<tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:18px">暂无真实交易所行情</td></tr>';
   }
 }
-
-// ============== EVOLUTION PAGE ==============
-pageHooks.evolution = function () {
-  if (!state.keysReady) return;
-  const evoChart = getChart('evoChart');
-  if (evoChart) {
-    const closed = (state.lastOrders || []).filter(o => (o.status || '').toUpperCase() === 'CLOSED').slice().reverse();
-    let equity = +(state.lastStatus?.config?.paper_seed_usd || 100000);
-    const data = closed.map((o, i) => {
-      equity += +(o.pnl_usd || 0);
-      return [i + 1, equity];
-    });
-    evoChart.setOption({
-      grid: { left: 40, right: 14, top: 14, bottom: 28 },
-      tooltip: { trigger: 'axis', ...TT },
-      xAxis: { type: 'value', name: '交易', ...AXIS, min: 1 },
-      yAxis: { type: 'value', ...AXIS },
-      series: [{ type: 'line', smooth: true, showSymbol: false, data, lineStyle: { color: '#6c5ce7', width: 2 }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(108,92,231,.2)' }, { offset: 1, color: 'rgba(108,92,231,0)' }] } } }],
-      graphic: data.length ? [] : [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无真实 paper 交易样本', fontSize: 13, fill: '#9ea2ab', fontFamily: 'inherit' } }],
-    }, true);
-  }
-
-  const fitnessChart = getChart('evoFitnessChart');
-  if (fitnessChart) {
-    fitnessChart.setOption({
-      series: [{
-        type: 'gauge', startAngle: 180, endAngle: 0, min: 0, max: 100,
-        pointer: { show: true, length: '55%', width: 4, itemStyle: { color: '#6c5ce7' } },
-        axisLine: { lineStyle: { width: 10, color: [[0.3, '#e74c3c'], [0.6, '#f39c12'], [0.8, '#00b894'], [1, '#0984e3']] } },
-        axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-        detail: { formatter: '{value}', fontSize: 18, fontWeight: 700, fontFamily: '"JetBrains Mono",monospace', color: '#6c5ce7', offsetCenter: [0, '30%'] },
-        data: [{ value: 78 }],
-      }],
-    }, true);
-  }
-};
 
 // ============== ORDERS PAGE ==============
 async function loadOrders() {
@@ -1865,29 +1924,471 @@ function renderOrdersPage() {
   renderOrderAnomalies();
 }
 
-function renderOrdersTable() {
-  const tbody = $('ordersTableBody');
-  if (!tbody) return;
-  if (!state.keysReady || !state.lastOrders.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-3);padding:30px">暂无订单数据</td></tr>';
+// ============== POT / TRADING / EVOLUTION ==============
+async function loadScannerPage() {
+  try {
+    const [status, watchlist, signals, positions, drafts] = await Promise.all([
+      api('GET', '/api/scanner/status'),
+      api('GET', '/api/scanner/watchlist'),
+      api('GET', '/api/scanner/signals?limit=100'),
+      api('GET', '/api/scanner/positions'),
+      api('GET', '/api/publisher/drafts'),
+    ]);
+    state.scannerStatus = status;
+    state.scannerWatchlist = watchlist.watchlist || [];
+    state.scannerSignals = signals.signals || [];
+    state.pubDrafts = drafts.drafts || [];
+    renderScannerStatus(status);
+    renderWatchlist(state.scannerWatchlist);
+    renderScannerSignals(state.scannerSignals);
+    renderPotPositions(positions.positions || []);
+    renderPubDrafts(state.pubDrafts);
+  } catch (e) {
+    toast('加载潜力币失败: ' + e.message, 'err');
+  }
+}
+
+function renderScannerStatus(s = state.scannerStatus || {}) {
+  setText('potRunState', s.running ? '运行中' : '已停止');
+  setText('potWarmup', s.warmup_done ? '观察循环已运行' : '等待首次扫描');
+  setText('potTodaySignals', s.today_signal_count || 0);
+  setText('potLastRun', s.last_run_at ? '上次 ' + fmt.ts(s.last_run_at) : '-');
+  setText('potNextRun', s.next_run_at ? fmt.ts(s.next_run_at) : '-');
+  setText('potErrors', s.consecutive_errors ? `连续错误 ${s.consecutive_errors}` : (s.last_error || '正常'));
+  setText('potWatchCount', s.watchlist_count || 0);
+}
+
+function trendTag(value, upWords = ['rising', 'deepening', 'expanding']) {
+  const v = String(value || 'unknown');
+  const cls = upWords.includes(v) ? 'tag-up' : ['falling', 'recovering', 'shrinking', 'positive'].includes(v) ? 'tag-dn' : 'tag-done';
+  const arrow = upWords.includes(v) ? '↑' : ['falling', 'recovering', 'shrinking', 'positive'].includes(v) ? '↓' : '→';
+  return `<span class="tag ${cls}">${arrow} ${escapeHtml(v)}</span>`;
+}
+
+function renderWatchlist(items = []) {
+  const body = $('potWatchlistBody');
+  if (!body) return;
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-3);padding:18px">暂无观察币。扫描器会把负费率且成交额达标的币自动加入观察清单。</td></tr>';
     return;
   }
-  const orders = (state.lastOrders || []).slice().reverse().slice(0, 20);
-  tbody.innerHTML = orders.map(o => {
-    const pnl = +o.pnl_pct || 0;
-    const cls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
-    const st = (o.status || '').toUpperCase();
-    const statusTag = st === 'OPEN' ? '<span class="tag tag-up">进行中</span>' : st === 'CLOSED' ? '<span class="tag tag-done">已完成</span>' : `<span class="tag">${o.status || '—'}</span>`;
+  body.innerHTML = items.map(item => `
+    <tr>
+      <td style="font-weight:600">${item.symbol}</td>
+      <td><span class="tag ${(+item.confidence >= 70) ? 'tag-up' : 'tag-done'}">${(+item.confidence || 0).toFixed(1)}</span></td>
+      <td>${trendTag(item.fr_trend, ['deepening'])}<div style="font-family:var(--mono);font-size:10.5px;color:var(--text-3)">${(+item.fr_current || 0).toFixed(6)}</div></td>
+      <td>${trendTag(item.oi_trend, ['rising'])}</td>
+      <td>${trendTag(item.volume_trend, ['expanding'])}</td>
+      <td>${fmt.price(item.price_current, 6)}</td>
+      <td>${item.ticks_watched || 0}</td>
+      <td>${item.status || 'watching'}</td>
+      <td style="display:flex;gap:6px">
+        <button class="grok-draft-btn" data-watch-detail="${item.symbol}">详情</button>
+        <button class="grok-draft-btn" data-watch-remove="${item.symbol}">移除</button>
+      </td>
+    </tr>`).join('');
+  qsa('[data-watch-detail]', body).forEach(btn => btn.addEventListener('click', () => showWatchlistItem(btn.dataset.watchDetail)));
+  qsa('[data-watch-remove]', body).forEach(btn => btn.addEventListener('click', () => removeWatchlistItem(btn.dataset.watchRemove)));
+}
+
+async function showWatchlistItem(symbol) {
+  try {
+    const j = await api('GET', `/api/scanner/watchlist/${encodeURIComponent(symbol)}`);
+    const item = j.item || {};
+    const ticks = j.ticks || [];
+    const el = $('potSignalDetail');
+    if (!el) return;
+    el.innerHTML = `
+      <div style="font-family:var(--mono);font-weight:700;margin-bottom:8px">${item.symbol} · confidence ${(+item.confidence || 0).toFixed(1)}</div>
+      <div>状态: ${item.status || '-'}</div>
+      <div>FR: ${(+item.fr_current || 0).toFixed(6)} (${item.fr_trend || '-'})</div>
+      <div>OI: ${fmt.compact(item.oi_current || 0)} (${item.oi_trend || '-'})</div>
+      <div>成交额: ${fmt.compact(item.volume_current || 0)} (${item.volume_trend || '-'})</div>
+      <div>价格: ${fmt.price(item.price_current, 6)} · 加入价 ${fmt.price(item.price_at_add, 6)}</div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:10px 0">
+      <div style="font-weight:600;color:var(--text)">最近观察 tick</div>
+      <pre style="white-space:pre-wrap;font-size:11px;background:var(--surface-2);border-radius:8px;padding:8px">${escapeHtml(JSON.stringify(ticks.slice(0, 10), null, 2))}</pre>`;
+  } catch (e) {
+    toast('加载观察项失败: ' + e.message, 'err');
+  }
+}
+
+async function removeWatchlistItem(symbol) {
+  try {
+    await api('DELETE', `/api/scanner/watchlist/${encodeURIComponent(symbol)}`);
+    toast(`${symbol} 已移出观察清单`, 'ok');
+    loadScannerPage();
+  } catch (e) {
+    toast('移除失败: ' + e.message, 'err');
+  }
+}
+
+async function addWatchlistItem() {
+  const symbol = normalizeUsdtSymbol($('potManualSymbol')?.value || '');
+  if (!symbol) return;
+  try {
+    await api('POST', `/api/scanner/watchlist/${encodeURIComponent(symbol)}`, {});
+    toast(`${slashSymbol(symbol)} 已加入观察`, 'ok');
+    if ($('potManualSymbol')) $('potManualSymbol').value = '';
+    loadScannerPage();
+  } catch (e) {
+    toast('加入观察失败: ' + e.message, 'err');
+  }
+}
+
+function renderScannerSignals(signals = []) {
+  const body = $('potSignalsBody');
+  if (!body) return;
+  if (!signals.length) {
+    body.innerHTML = '<tr><td colspan="7" style="color:var(--text-3);text-align:center;padding:20px">暂无已确认信号。POTagent 会先把负费率且成交额达标的币加入观察清单，confidence 达标后再进入 AI 分析。</td></tr>';
+    return;
+  }
+  body.innerHTML = signals.map(s => `
+    <tr data-pot-signal="${s.id}">
+      <td>${s.symbol}</td>
+      <td><span class="tag ${(+s.potential_score >= 70) ? 'tag-up' : 'tag-done'}">${(+s.potential_score || 0).toFixed(1)}</span></td>
+      <td>${(+s.fr_previous || 0).toFixed(4)} -> ${(+s.fr_current || 0).toFixed(4)}</td>
+      <td>+${(+s.oi_change_pct || 0).toFixed(1)}%</td>
+      <td>${fmt.compact(s.volume_24h || 0)}</td>
+      <td>${s.status || 'new'}</td>
+      <td style="display:flex;gap:6px">
+        <button class="grok-draft-btn" data-pot-detail="${s.id}">详情</button>
+        <button class="grok-draft-btn primary" data-pot-analyze="${s.id}">AI分析</button>
+        <button class="grok-draft-btn" data-pot-paper="${s.id}">跟单</button>
+        <button class="grok-draft-btn" data-pot-draft="${s.id}">生成文章</button>
+      </td>
+    </tr>`).join('');
+  qsa('[data-pot-detail]', body).forEach(btn => btn.addEventListener('click', () => showPotSignal(+btn.dataset.potDetail)));
+  qsa('[data-pot-analyze]', body).forEach(btn => btn.addEventListener('click', () => analyzePotSignal(+btn.dataset.potAnalyze)));
+  qsa('[data-pot-paper]', body).forEach(btn => btn.addEventListener('click', () => paperEntryPotSignal(+btn.dataset.potPaper)));
+  qsa('[data-pot-draft]', body).forEach(btn => btn.addEventListener('click', () => draftPotSignal(+btn.dataset.potDraft)));
+}
+
+function showPotSignal(id) {
+  const signal = state.scannerSignals.find(s => +s.id === +id);
+  state.selectedPotSignal = signal;
+  const el = $('potSignalDetail');
+  if (!el || !signal) return;
+  const analysis = signal.ai_analysis || {};
+  const segs = (signal.oi_segments || []).map(v => fmt.compact(v)).join(' > ');
+  el.innerHTML = `
+    <div style="font-family:var(--mono);font-weight:700;margin-bottom:8px">${signal.symbol} · score ${(+signal.potential_score || 0).toFixed(1)}</div>
+    <div>费率: ${(+signal.fr_previous || 0).toFixed(6)} -> ${(+signal.fr_current || 0).toFixed(6)}</div>
+    <div>OI四段: ${segs || '-'}</div>
+    <div>OI涨幅: ${(+signal.oi_change_pct || 0).toFixed(2)}%</div>
+    <div>成交额: ${fmt.compact(signal.volume_24h || 0)}</div>
+    <div>广场热度: ${signal.square_heat || 0} 帖</div>
+    <hr style="border:none;border-top:1px solid var(--border);margin:10px 0">
+    <div style="font-weight:600;color:var(--text)">POTagent 分析</div>
+    <div>decision: ${analysis.decision || '-'}</div>
+    <div>confidence: ${analysis.confidence ?? '-'}</div>
+    <div style="white-space:pre-wrap">${analysis.reasoning || '尚未分析'}</div>`;
+}
+
+async function analyzePotSignal(id) {
+  try {
+    const j = await api('POST', `/api/scanner/signals/${id}/analyze`, {});
+    toast('POTagent 分析完成', 'ok');
+    const idx = state.scannerSignals.findIndex(s => +s.id === +id);
+    if (idx >= 0) state.scannerSignals[idx] = j.signal;
+    renderScannerSignals(state.scannerSignals);
+    showPotSignal(id);
+  } catch (e) {
+    toast('分析失败: ' + e.message, 'err');
+  }
+}
+
+async function draftPotSignal(id) {
+  try {
+    const j = await api('POST', `/api/publisher/generate/${id}`, {});
+    toast(`PUBagent 草稿已生成 #${j.draft_id}`, 'ok');
+    const drafts = await api('GET', '/api/publisher/drafts');
+    state.pubDrafts = drafts.drafts || [];
+    renderPubDrafts(state.pubDrafts);
+  } catch (e) {
+    toast('生成草稿失败: ' + e.message, 'err');
+  }
+}
+
+async function paperEntryPotSignal(id) {
+  try {
+    if (!confirm('确认用 Paper 模式跟单这个 POTagent 信号？')) return;
+    await api('POST', `/api/scanner/signals/${id}/paper-entry`, {});
+    toast('Paper 跟单已创建', 'ok');
+    await Promise.all([loadScannerPage(), loadTradingPage()]);
+  } catch (e) {
+    toast('Paper 跟单失败: ' + e.message, 'err');
+  }
+}
+
+function renderPubDrafts(drafts = []) {
+  const body = $('pubDraftsBody');
+  if (!body) return;
+  if (!drafts.length) {
+    body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-3);padding:16px">暂无发布草稿。先在 POT 信号中点击“生成文章”。</td></tr>';
+    return;
+  }
+  body.innerHTML = drafts.map(d => {
+    const preview = escapeHtml(String(d.content || '').slice(0, 90));
+    const err = escapeHtml(d.error || '');
+    const postId = d.post_id ? escapeHtml(d.post_id) : '';
+    const postCell = postId ? `<a href="https://www.binance.com/en/square/post/${postId}" target="_blank" style="color:var(--purple)">#${postId}</a>` : '-';
     return `<tr>
-      <td style="font-weight:600">${o.symbol || 'BTC/USDT'}</td>
-      <td><span class="tag ${o.side === 'long' ? 'tag-up' : 'tag-dn'}">${o.side === 'long' ? '做多' : '做空'}</span></td>
-      <td>${fmt.price(o.entry, 1)}</td>
-      <td>${st === 'CLOSED' ? fmt.price(o.exit, 1) : '—'}</td>
-      <td class="${cls}" style="font-weight:600">${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}%</td>
-      <td>${statusTag}</td>
-      <td>${fmt.ts(o.timestamp)}</td>
+      <td style="max-width:360px;white-space:normal">${preview}${String(d.content || '').length > 90 ? '...' : ''}</td>
+      <td>${d.symbol || '-'}</td>
+      <td>${(+d.potential_score || 0).toFixed(1)}</td>
+      <td>${d.mode || 'draft'}</td>
+      <td>${postCell}</td>
+      <td style="max-width:220px;white-space:normal;color:var(--red)">${err || '-'}</td>
+      <td style="display:flex;gap:6px">
+        <button class="grok-draft-btn" data-draft-preview="${d.id}">预览</button>
+        <button class="grok-draft-btn primary" data-draft-publish="${d.id}">发布</button>
+      </td>
     </tr>`;
   }).join('');
+  qsa('[data-draft-preview]', body).forEach(btn => btn.addEventListener('click', () => previewDraft(+btn.dataset.draftPreview)));
+  qsa('[data-draft-publish]', body).forEach(btn => btn.addEventListener('click', () => publishDraft(+btn.dataset.draftPublish)));
+}
+
+function previewDraft(id) {
+  const draft = (state.pubDrafts || []).find(d => +d.id === +id);
+  if (!draft) return;
+  alert(draft.content || '');
+}
+
+async function publishDraft(id) {
+  try {
+    const square_api_key = ($('squareApiKey')?.value || '').trim();
+    if (square_api_key) await saveAgentConfigs();
+    if (!confirm('确认发布到 Binance Square？发布后会进入公开信息流。')) return;
+    await api('POST', `/api/publisher/drafts/${id}/publish`, { square_api_key });
+    toast('Square 发布成功', 'ok');
+    const drafts = await api('GET', '/api/publisher/drafts');
+    state.pubDrafts = drafts.drafts || [];
+    renderPubDrafts(state.pubDrafts);
+  } catch (e) {
+    toast('Square 发布失败: ' + e.message, 'err');
+    loadScannerPage();
+  }
+}
+
+function renderPotPositions(positions = []) {
+  const body = $('potPositionsBody');
+  if (!body) return;
+  if (!positions.length) {
+    body.innerHTML = '<tr><td colspan="7" style="color:var(--text-3);text-align:center;padding:16px">暂无 POTagent open positions</td></tr>';
+    return;
+  }
+  body.innerHTML = positions.map(p => `
+    <tr>
+      <td>${p.symbol}</td><td>${p.side}</td><td>${fmt.price(p.entry_price, 6)}</td>
+      <td>${fmt.price(p.trailing_stop || p.stop_price, 6)}</td><td>${(+p.remaining_pct || 0).toFixed(0)}%</td><td>${p.status}</td>
+      <td><button class="grok-draft-btn" data-pot-review="${p.id}">复评</button></td>
+    </tr>`).join('');
+  qsa('[data-pot-review]', body).forEach(btn => btn.addEventListener('click', () => reviewPotPosition(+btn.dataset.potReview)));
+}
+
+async function reviewPotPosition(id) {
+  try {
+    const price = prompt('输入当前价格用于复评（留空按入场价）') || '';
+    const market_context = price ? { price: +price } : {};
+    await api('POST', `/api/scanner/positions/${id}/review`, { market_context });
+    toast('持仓复评完成', 'ok');
+    loadScannerPage();
+    loadTradingPage();
+  } catch (e) {
+    toast('复评失败: ' + e.message, 'err');
+  }
+}
+
+async function scannerControl(action) {
+  try {
+    const path = action === 'run' ? '/api/scanner/run' : `/api/scanner/${action}`;
+    await api('POST', path, {});
+    toast(action === 'start' ? 'POTagent 已启动' : action === 'stop' ? 'POTagent 已停止' : '扫描完成', 'ok');
+    await loadScannerPage();
+  } catch (e) {
+    toast('POTagent 操作失败: ' + e.message, 'err');
+  }
+}
+
+async function loadTradingPage() {
+  try {
+    state.tradingAgentFilter = $('tradeAgentFilter')?.value || '';
+    const suffix = state.tradingAgentFilter ? `?agent_type=${encodeURIComponent(state.tradingAgentFilter)}` : '';
+    const [stats, orders, curve] = await Promise.all([
+      api('GET', `/api/trading/paper/stats${suffix}`),
+      api('GET', `/api/trading/paper/orders${suffix}`),
+      api('GET', `/api/trading/paper/equity-curve${suffix}`),
+    ]);
+    renderTradingStats(stats.stats || {});
+    renderPaperOrders(orders.orders || []);
+    renderEquityCurve(curve.curve || []);
+  } catch (e) {
+    toast('加载交易面板失败: ' + e.message, 'err');
+  }
+}
+
+function renderTradingStats(s) {
+  setText('tradeTotal', s.total_trades || 0);
+  setText('tradeWinRate', (s.win_rate || 0).toFixed ? s.win_rate.toFixed(1) + '%' : (s.win_rate || 0) + '%');
+  setText('tradePF', s.profit_factor || 0);
+  setText('tradePnl', fmt.num(s.total_pnl || 0, 2));
+  setText('tradeReady', s.live_ready ? '是' : '否');
+}
+
+function renderPaperOrders(orders) {
+  const body = $('paperOrdersBody');
+  if (!body) return;
+  if (!orders.length) {
+    body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-3);padding:16px">暂无 Paper 订单</td></tr>';
+    return;
+  }
+  body.innerHTML = orders.map(o => `
+    <tr><td>${o.agent_type}</td><td>${o.symbol}</td><td>${o.side}</td><td>${fmt.price(o.entry_price, 6)}</td><td>${o.exit_price ? fmt.price(o.exit_price, 6) : '-'}</td><td class="${(+o.pnl_usdt || 0) >= 0 ? 'pos' : 'neg'}">${fmt.num(o.pnl_usdt || 0, 2)}</td><td>${o.exit_reason || '-'}</td></tr>
+  `).join('');
+}
+
+function renderEquityCurve(curve) {
+  const chart = getChart('paperEquityChart');
+  if (!chart) return;
+  chart.setOption({
+    tooltip: TT,
+    xAxis: { type: 'category', data: curve.map((_, i) => i), ...AXIS },
+    yAxis: { type: 'value', ...AXIS },
+    series: [{ type: 'line', smooth: true, data: curve.map(p => p.equity), areaStyle: { color: 'rgba(0,184,148,.12)' }, lineStyle: { color: '#00b894' } }]
+  });
+}
+
+function renderEvolutionShell() {
+  const page = $('page-evolution');
+  if (!page) return;
+  page.innerHTML = `
+    <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">自进化</h1><p style="color:var(--text-2);font-size:13px">只展示真实复盘、当前记忆和进化日志；没有接入后端的假滑块已移除。</p></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="evoAgentSelect" class="hdr-select" style="width:130px"><option value="pot">POT</option><option value="liq">LIQ</option><option value="anl">ANL</option><option value="pub">PUB</option></select>
+        <button id="btnEvolutionTrigger" class="grok-draft-btn primary">手动复盘</button>
+        <button id="btnEvolutionRefresh" class="grok-draft-btn">刷新</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="card"><div class="card-head"><div class="card-title">当前进化记忆</div></div><pre id="evoCurrentBox" style="white-space:pre-wrap;font-size:12px;color:var(--text-2);background:var(--surface-2);border-radius:8px;padding:12px;min-height:180px;overflow:auto">加载中...</pre></div>
+      <div class="card"><div class="card-head"><div class="card-title">复盘说明</div></div><div style="font-size:12px;color:var(--text-2);line-height:1.8">复盘会读取对应 Agent 的轨迹和已关闭 Paper 订单，样本不足时只返回低置信度建议。进化结果写入 memory，下次 Agent 决策时读取。AI建议仅供参考，不构成投资建议。</div></div>
+    </div>
+    <div class="card"><div class="card-head"><div class="card-title">进化日志</div></div><table class="tbl"><thead><tr><th>版本</th><th>Agent</th><th>触发</th><th>时间</th><th>变更</th></tr></thead><tbody id="evoLogBody"></tbody></table></div>`;
+  $('btnEvolutionTrigger')?.addEventListener('click', triggerEvolution);
+  $('btnEvolutionRefresh')?.addEventListener('click', loadEvolutionPage);
+  $('evoAgentSelect')?.addEventListener('change', loadEvolutionPage);
+}
+
+async function loadEvolutionPage() {
+  renderEvolutionShell();
+  const agent = $('evoAgentSelect')?.value || 'pot';
+  try {
+    const [current, logs] = await Promise.all([
+      api('GET', `/api/evolution/current/${agent}`),
+      api('GET', `/api/evolution/log/${agent}`),
+    ]);
+    if ($('evoCurrentBox')) $('evoCurrentBox').textContent = JSON.stringify(current.current || {}, null, 2);
+    const body = $('evoLogBody');
+    const items = logs.logs || [];
+    if (body) {
+      body.innerHTML = items.length ? items.map(x => `
+        <tr>
+          <td>${x.version}</td><td>${x.agent_type}</td><td>${x.trigger || '-'}</td><td>${fmt.ts(x.created_at)}</td>
+          <td style="max-width:520px;white-space:normal"><pre style="white-space:pre-wrap;margin:0;font-size:11px">${escapeHtml(JSON.stringify(x.changes || {}, null, 2))}</pre></td>
+        </tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--text-3);padding:16px">暂无真实进化日志</td></tr>';
+    }
+  } catch (e) {
+    toast('加载进化页失败: ' + e.message, 'err');
+  }
+}
+
+async function triggerEvolution() {
+  const agent = $('evoAgentSelect')?.value || 'pot';
+  try {
+    await api('POST', `/api/evolution/trigger/${agent}`, { trigger: 'manual' });
+    toast('复盘已完成', 'ok');
+    await loadEvolutionPage();
+  } catch (e) {
+    toast('复盘失败: ' + e.message, 'err');
+  }
+}
+
+async function loadAgentConfigs() {
+  try {
+    const j = await api('GET', '/api/agents/config');
+    state.agentConfigs = j.agents || {};
+    Object.entries(state.agentConfigs).forEach(([agent, cfg]) => {
+      const root = qs(`[data-agent-config="${agent}"]`);
+      if (!root) return;
+      qs('.agent-provider', root).value = cfg.provider || 'anthropic';
+      qs('.agent-model', root).value = cfg.model || '';
+      qs('.agent-base-url', root).value = cfg.base_url || '';
+      qs('.agent-temp', root).value = cfg.temperature ?? 0.2;
+      qs('.agent-enabled', root).checked = cfg.enabled !== false;
+    });
+    const sc = j.scanner || {};
+    if ($('potTgEnabled')) $('potTgEnabled').checked = !!sc.tg_enabled;
+    if ($('potAlertScore')) $('potAlertScore').value = sc.min_score_for_alert || 70;
+    if ($('potPollSeconds')) $('potPollSeconds').value = sc.poll_seconds || 60;
+    if ($('potMinOiChange')) $('potMinOiChange').value = sc.min_oi_change_pct ?? 8;
+    if ($('potMinFrPeriods')) $('potMinFrPeriods').value = sc.min_fr_positive_periods || 2;
+    if ($('potMinVolume')) $('potMinVolume').value = sc.min_volume_usdt ?? 2000000;
+    if ($('potWatchFrAbs')) $('potWatchFrAbs').value = sc.min_watch_fr_abs ?? 0.0001;
+    if ($('potWatchThreshold')) $('potWatchThreshold').value = sc.watch_confidence_threshold ?? 70;
+    if ($('potWatchTimeout')) $('potWatchTimeout').value = sc.watch_timeout_ticks ?? 480;
+    if ($('potMaxPositions')) $('potMaxPositions').value = sc.max_concurrent_positions || 3;
+    if ($('potPaperSlippage')) $('potPaperSlippage').value = sc.paper_slippage_pct ?? 0.003;
+    if ($('potPublishMode')) $('potPublishMode').value = sc.publish_mode || 'manual';
+    if ($('potEntryConfirm')) $('potEntryConfirm').value = sc.entry_confirmation_mode || 'aggressive';
+    if ($('potNotional')) $('potNotional').value = sc.trading_notional_usdt || 100;
+    if ($('potAutoAnalyze')) $('potAutoAnalyze').checked = !!sc.auto_analyze;
+    if ($('potAutoTrade')) $('potAutoTrade').checked = !!sc.auto_trade;
+    if ($('squareApiKey')) {
+      $('squareApiKey').value = '';
+      $('squareApiKey').placeholder = sc.has_square_api_key ? '已保存 Square OpenAPI Key，留空沿用' : 'Binance Square OpenAPI Key';
+    }
+  } catch {}
+}
+
+async function saveAgentConfigs() {
+  const agents = {};
+  qsa('[data-agent-config]').forEach(root => {
+    const agent = root.dataset.agentConfig;
+    agents[agent] = {
+      provider: qs('.agent-provider', root)?.value || 'anthropic',
+      api_key: qs('.agent-key', root)?.value || undefined,
+      model: qs('.agent-model', root)?.value || '',
+      base_url: qs('.agent-base-url', root)?.value || '',
+      temperature: +(qs('.agent-temp', root)?.value || 0.2),
+      enabled: !!qs('.agent-enabled', root)?.checked,
+    };
+  });
+  const scanner = {
+    tg_enabled: !!$('potTgEnabled')?.checked,
+    tg_bot_token: $('potTgToken')?.value || undefined,
+    tg_chat_id: $('potTgChatId')?.value || undefined,
+    min_score_for_alert: +($('potAlertScore')?.value || 70),
+    poll_seconds: +($('potPollSeconds')?.value || 60),
+    min_oi_change_pct: +($('potMinOiChange')?.value || 8),
+    min_fr_positive_periods: +($('potMinFrPeriods')?.value || 2),
+    min_volume_usdt: +($('potMinVolume')?.value || 2000000),
+    min_watch_fr_abs: +($('potWatchFrAbs')?.value || 0.0001),
+    watch_confidence_threshold: +($('potWatchThreshold')?.value || 70),
+    watch_timeout_ticks: +($('potWatchTimeout')?.value || 480),
+    max_concurrent_positions: +($('potMaxPositions')?.value || 3),
+    paper_slippage_pct: +($('potPaperSlippage')?.value || 0.003),
+    publish_mode: $('potPublishMode')?.value || 'manual',
+    entry_confirmation_mode: $('potEntryConfirm')?.value || 'aggressive',
+    trading_notional_usdt: +($('potNotional')?.value || 100),
+    auto_analyze: !!$('potAutoAnalyze')?.checked,
+    auto_trade: !!$('potAutoTrade')?.checked,
+  };
+  const squareKey = ($('squareApiKey')?.value || '').trim();
+  if (squareKey) scanner.square_api_key = squareKey;
+  await api('POST', '/api/agents/config', { agents, scanner });
 }
 
 function renderOrdersTable() {
@@ -2022,26 +2523,10 @@ async function loadEvents() {
 function renderEventsTimeline() {
   const container = $('evTimeline');
   if (!container) return;
-  const events = (state.lastEvents || []).slice().reverse().slice(0, 30);
-  container.innerHTML = events.map(e => {
-    const kindColors = { order: 'var(--green)', error: 'var(--red)', signal: 'var(--purple)', agent: 'var(--blue)', risk: 'var(--amber)', heatmap: 'var(--orange)' };
-    const color = kindColors[e.kind] || 'var(--text-3)';
-    return `<div class="ev-row" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;transition:background .15s">
-      <div style="width:8px;height:8px;border-radius:50%;background:${color};margin-top:5px;flex-shrink:0"></div>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:500;margin-bottom:2px">${escapeHtml(e.title || e.kind || '')}</div>
-        <div style="font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.detail || e.message || '')}</div>
-      </div>
-      <div style="font-size:10.5px;color:var(--text-3);white-space:nowrap">${fmt.ts(e.timestamp)}</div>
-    </div>`;
-  }).join('');
-}
-
-function renderEventsTimeline() {
-  const container = $('evTimeline');
-  if (!container) return;
-  const events = (state.lastEvents || []).slice(0, 30);
-  renderEventsSummary(state.lastEvents || []);
+  const allEvents = state.lastEvents || [];
+  const filtered = state.eventFilter ? allEvents.filter(e => e.kind === state.eventFilter || e.module === state.eventFilter || e.action === state.eventFilter) : allEvents;
+  const events = filtered.slice(0, 30);
+  renderEventsSummary(filtered);
   renderEventDetail(events[0]);
   if (!events.length) {
     container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3);background:var(--surface)">暂无真实事件数据</div>';
@@ -2072,7 +2557,7 @@ function renderEventsSummary(events = state.lastEvents || []) {
   const subs = qsa('#page-events .kpi-sub');
   subs.forEach(s => { s.className = 'kpi-sub'; s.textContent = '来自 /api/events'; });
   const countLabel = qs('#page-events #evTimeline')?.nextElementSibling?.querySelector('span');
-  if (countLabel) countLabel.textContent = `共 ${state.lastEvents.length} 条`;
+  if (countLabel) countLabel.textContent = `共 ${events.length} 条`;
 }
 
 function renderEventDetail(event) {
@@ -3419,6 +3904,29 @@ async function bootstrap() {
   $('btnLogsDiagnose')?.addEventListener('click', diagnoseLogs);
   $('logsFilter')?.addEventListener('change', loadLogs);
   pageHooks['logs'] = loadLogs;
+  pageHooks['potential'] = loadScannerPage;
+  pageHooks['trading'] = loadTradingPage;
+  pageHooks['evolution'] = loadEvolutionPage;
+  $('btnScannerStart')?.addEventListener('click', () => scannerControl('start'));
+  $('btnScannerStop')?.addEventListener('click', () => scannerControl('stop'));
+  $('btnScannerRun')?.addEventListener('click', () => scannerControl('run'));
+  $('btnScannerRefresh')?.addEventListener('click', loadScannerPage);
+  $('btnPotPositionsRefresh')?.addEventListener('click', loadScannerPage);
+  $('btnPubDraftsRefresh')?.addEventListener('click', loadScannerPage);
+  $('btnPotAddWatch')?.addEventListener('click', addWatchlistItem);
+  $('btnTradingRefresh')?.addEventListener('click', loadTradingPage);
+  $('tradeAgentFilter')?.addEventListener('change', loadTradingPage);
+  await loadAgentConfigs();
+  ['potAutoAnalyze','potAutoTrade','potTgEnabled','potPollSeconds','potMinOiChange','potMinFrPeriods','potMinVolume','potWatchFrAbs','potWatchThreshold','potWatchTimeout','potMaxPositions','potPaperSlippage','potPublishMode','potEntryConfirm','potNotional','potAlertScore'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    const handler = async () => { try { await saveAgentConfigs(); toast('POTagent 配置已保存', 'ok'); } catch (e) { toast('POTagent 配置保存失败: ' + e.message, 'err'); } };
+    el.addEventListener(el.type === 'number' ? 'change' : 'change', handler);
+  });
+  $('squareApiKey')?.addEventListener('blur', async () => {
+    if (!($('squareApiKey')?.value || '').trim()) return;
+    try { await saveAgentConfigs(); toast('Square Key 已保存', 'ok'); } catch (e) { toast('Square Key 保存失败: ' + e.message, 'err'); }
+  });
 
   // Wire pipeline
   $('btnPipelineGenerate')?.addEventListener('click', pipelineGenerate);
@@ -3430,6 +3938,16 @@ async function bootstrap() {
     if (!el) return;
     el.addEventListener('change', () => { el.value = slashSymbol(normalizeUsdtSymbol(el.value)); });
     el.addEventListener('blur', () => { el.value = slashSymbol(normalizeUsdtSymbol(el.value)); });
+  });
+  $('hdrSymbol')?.addEventListener('change', async () => {
+    state.marketExtras = {};
+    await refreshAgentData();
+    pageHooks[activePageName()]?.();
+  });
+  $('hdrInterval')?.addEventListener('change', async () => {
+    state.marketExtras = {};
+    await refreshAgentData();
+    pageHooks[activePageName()]?.();
   });
   $('hmInt')?.addEventListener('change', () => pageHooks.heatmap?.());
   $('hmSym')?.addEventListener('input', () => pageHooks.heatmap?.());
@@ -3457,8 +3975,54 @@ async function bootstrap() {
     btn.addEventListener('click', function () {
       qsa('button', this.parentElement).forEach(b => b.classList.remove('active'));
       this.classList.add('active');
+      const text = this.textContent.trim().toLowerCase();
+      if (this.parentElement?.id === 'perfTabs') {
+        state.perfMetric = /回撤/.test(this.textContent) ? 'drawdown' : /率/.test(this.textContent) ? 'roi' : 'pnl';
+        renderDashCharts();
+      } else if (this.closest('#page-market')) {
+        const map = { '1h': '1H', '4h': '4H', '1d': '1D', '1w': '1D' };
+        if (map[text] && $('hdrInterval')) {
+          $('hdrInterval').value = map[text];
+          if (text === '1w') toast('当前交易所刷新接口不支持 1W，已使用 1D 数据展示', 'info');
+          state.marketExtras = {};
+          refreshAgentData();
+        } else {
+          state.marketExtras = {};
+          loadMarketExtras();
+        }
+      } else if (this.parentElement?.id === 'hmTimeTabs' && $('hmInt')) {
+        const map = { '15m': '12h', '1h': '12h', '4h': '12h', '1d': '1d' };
+        $('hmInt').value = map[text] || selectedHeatmapInterval();
+        pageHooks.heatmap?.();
+      }
     });
   });
+  qsa('#evFilterTabs [data-evf]').forEach(btn => btn.addEventListener('click', function () {
+    qsa('[data-evf]', this.parentElement).forEach(b => {
+      b.classList.toggle('active', b === this);
+      b.style.background = b === this ? 'var(--purple)' : 'var(--surface-2)';
+      b.style.color = b === this ? '#fff' : 'var(--text-2)';
+      b.style.border = b === this ? 'none' : '1px solid var(--border)';
+    });
+    state.eventFilter = this.dataset.evf || '';
+    renderEventsTimeline();
+  }));
+  $('btnHmFull')?.addEventListener('click', () => {
+    const target = $('hmDetailChart') || $('dashHmChart');
+    const box = target?.closest?.('.card') || target;
+    box?.requestFullscreen?.();
+  });
+  $('btnAiDetail')?.addEventListener('click', () => navTo('evolution'));
+  $('btnResetStrategy')?.addEventListener('click', () => {
+    if ($('configSymbol')) $('configSymbol').value = 'BTC/USDT';
+    if ($('configSafetyMode')) $('configSafetyMode').value = 'paper';
+    if ($('potMinOiChange')) $('potMinOiChange').value = 8;
+    if ($('potMinVolume')) $('potMinVolume').value = 2000000;
+    if ($('potWatchFrAbs')) $('potWatchFrAbs').value = 0.0001;
+    if ($('potWatchThreshold')) $('potWatchThreshold').value = 70;
+    saveSettings();
+  });
+  $('btnSettingsReset')?.addEventListener('click', () => loadAgentConfigs());
   $('hdrExchange')?.addEventListener('change', async function () {
     const exchange = syncExchangeSelectors(this.value);
     renderExchangeCredentialFields();
@@ -3517,6 +4081,13 @@ async function saveSettings() {
   config.liq_map_snapshot_interval_seconds = Math.max(60, +($('autoHeatmapInterval')?.value || 600));
   config.llm_review_enabled = !!$('autoLlmReview')?.checked;
   config.safety_mode = $('configSafetyMode')?.value || $('safetyMode')?.value || 'paper';
+  if (config.safety_mode === 'live') {
+    const confirmed = prompt('确认启用实盘交易？这将使用真实资金。请输入 LIVE 继续。');
+    if (confirmed !== 'LIVE') {
+      toast('已取消启用 Live 实盘模式', 'err');
+      return;
+    }
+  }
   config.min_opportunity_score = Math.max(0, Math.min(100, +($('minOpportunityScore')?.value || 70)));
   config.decision_report_retention = Math.max(10, Math.min(1000, +($('decisionReportRetention')?.value || 100)));
   config.save_claw402_raw_samples = !!$('saveClawRawSamples')?.checked;
@@ -3537,6 +4108,7 @@ async function saveSettings() {
       exchangeCredentials,
     });
     await api('POST', '/api/agent/config', config);
+    await saveAgentConfigs();
     state.pk = pk;
     state.llmKey = llmKey;
     checkKeys();

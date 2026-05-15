@@ -239,6 +239,8 @@ button,input,select,textarea{font:inherit;color:inherit}
   <div class="nav-item active" data-page="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg><span>仪表盘</span></div>
   <div class="nav-item" data-page="market"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 17l5-6 4 4 7-9"/><polyline points="15 6 21 6 21 12"/></svg><span>市场数据</span></div>
   <div class="nav-item" data-page="heatmap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><span>清算地图</span></div>
+  <div class="nav-item" data-page="potential"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 7v8M7 11h8"/></svg><span>潜力币</span></div>
+  <div class="nav-item" data-page="trading"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 15l3-4 3 2 5-7"/></svg><span>交易</span></div>
   <div class="nav-item" data-page="strategy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6M7 12H1"/></svg><span>策略配置</span></div>
   <div class="nav-item" data-page="orders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><span>订单</span></div>
   <div class="nav-item" data-page="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span>事件流</span></div>
@@ -445,7 +447,7 @@ button,input,select,textarea{font:inherit;color:inherit}
       </div>
       <div class="kpi-card">
         <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">总市值</div><div class="kpi-value"><span id="mktCap">—</span><span class="unit">T</span></div><div class="kpi-sub">未配置 provider</div></div>
+        <div class="kpi-body"><div class="kpi-label">总市值</div><div class="kpi-value"><span id="mktCap">—</span><span class="unit">T</span></div><div class="kpi-sub">CoinGecko global</div></div>
       </div>
       <div class="kpi-card">
         <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
@@ -453,7 +455,7 @@ button,input,select,textarea{font:inherit;color:inherit}
       </div>
       <div class="kpi-card">
         <div class="kpi-icon" style="background:var(--amber-soft);color:var(--amber)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">恐惧贪婪指数</div><div class="kpi-value" style="color:var(--green)"><span id="mktFearGreed">—</span></div><div class="kpi-sub">未配置 provider</div></div>
+        <div class="kpi-body"><div class="kpi-label">恐惧贪婪指数</div><div class="kpi-value" style="color:var(--green)"><span id="mktFearGreed">—</span></div><div class="kpi-sub">Alternative.me</div></div>
       </div>
       <div class="kpi-card">
         <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg></div>
@@ -489,7 +491,7 @@ button,input,select,textarea{font:inherit;color:inherit}
       <div class="card">
         <div class="card-head"><div class="card-title">板块表现</div><button class="card-action">查看全部 ›</button></div>
         <div style="display:grid;gap:6px" id="mktSectors">
-          <div style="text-align:center;color:var(--text-3);padding:20px;background:var(--surface-2);border-radius:8px">未配置真实板块轮动数据源</div>
+          <div style="text-align:center;color:var(--text-3);padding:20px;background:var(--surface-2);border-radius:8px">点击获取数据后显示 CoinGecko 板块表现</div>
         </div>
       </div>
 
@@ -498,7 +500,7 @@ button,input,select,textarea{font:inherit;color:inherit}
         <div id="mktFlowChart" style="height:200px"></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
           <div style="padding:8px;background:var(--green-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">24h 成交额</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--green)">—</div></div>
-          <div style="padding:8px;background:var(--red-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">净流入/流出</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red)">未配置 provider</div></div>
+          <div style="padding:8px;background:var(--red-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">BTC/ETH 市值占比</div><div style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red)">—</div></div>
         </div>
       </div>
     </div>
@@ -603,6 +605,78 @@ button,input,select,textarea{font:inherit;color:inherit}
         <div class="card-head"><div class="card-title">历史信号对照</div><button class="card-action">查看真实历史信号</button></div>
       <div style="text-align:center;color:var(--text-3);padding:20px;background:var(--surface-2);border-radius:8px">暂无真实历史信号</div>
     </div>
+  </section>
+
+  <section id="page-potential" class="page">
+    <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">潜力币</h1><p style="color:var(--text-2);font-size:13px">POTagent 先把负费率且成交额达标的币加入观察清单，再按 FR/OI/成交量趋势累积 confidence，达标后触发 AI 分析与 Paper 交易</p></div>
+      <div style="display:flex;gap:8px">
+        <button id="btnScannerStart" style="padding:9px 16px;border:none;border-radius:8px;background:var(--green);color:#fff;font-size:12px;font-weight:600;cursor:pointer">启动扫描</button>
+        <button id="btnScannerStop" style="padding:9px 16px;border:none;border-radius:8px;background:var(--red);color:#fff;font-size:12px;font-weight:600;cursor:pointer">停止</button>
+        <button id="btnScannerRun" style="padding:9px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:12px;cursor:pointer">手动扫描</button>
+      </div>
+    </div>
+    <div class="kpi-row" style="grid-template-columns:repeat(4,1fr)">
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">扫描状态</div><div class="kpi-value" id="potRunState">-</div><div class="kpi-sub" id="potWarmup">-</div></div></div>
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">今日信号</div><div class="kpi-value" id="potTodaySignals">0</div><div class="kpi-sub" id="potLastRun">-</div></div></div>
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">下次扫描</div><div class="kpi-value" id="potNextRun">-</div><div class="kpi-sub" id="potErrors">-</div></div></div>
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">观察清单</div><div class="kpi-value" id="potWatchCount">0</div><div class="kpi-sub">负费率 + 成交额达标后持续监控</div></div></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">POTagent 观察清单</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="potManualSymbol" class="sym-input" placeholder="手动加入，如 SOL/USDT" style="width:180px">
+          <button class="card-action" id="btnPotAddWatch">加入观察</button>
+        </div>
+      </div>
+      <table class="tbl"><thead><tr><th>币种</th><th>置信度</th><th>FR趋势</th><th>OI趋势</th><th>成交量趋势</th><th>价格</th><th>已观察</th><th>状态</th><th>操作</th></tr></thead><tbody id="potWatchlistBody"></tbody></table>
+    </div>
+    <div class="heatmap-layout">
+      <div class="card">
+        <div class="card-head"><div class="card-title">POTagent 历史信号</div><button class="card-action" id="btnScannerRefresh">刷新</button></div>
+        <table class="tbl"><thead><tr><th>币种</th><th>评分</th><th>费率</th><th>OI</th><th>成交额</th><th>状态</th><th>操作</th></tr></thead><tbody id="potSignalsBody"></tbody></table>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title">信号详情</div></div>
+        <div id="potSignalDetail" style="font-size:12px;color:var(--text-2);line-height:1.7">选择一个信号查看 AI 分析、退出条件和发布草稿。</div>
+        <div style="margin-top:12px;padding:10px;background:var(--amber-soft);border-radius:8px;color:var(--amber-text);font-size:12px">AI建议仅供参考，不构成投资建议</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div class="card-title">POTagent 当前持仓</div><button class="card-action" id="btnPotPositionsRefresh">刷新</button></div>
+      <table class="tbl"><thead><tr><th>币种</th><th>方向</th><th>入场</th><th>动态止损</th><th>剩余</th><th>状态</th><th>操作</th></tr></thead><tbody id="potPositionsBody"></tbody></table>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">PUBagent 发布草稿</div>
+        <button class="card-action" id="btnPubDraftsRefresh">刷新</button>
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:8px;margin-bottom:10px">
+        <input id="squareApiKey" type="password" placeholder="Binance Square OpenAPI Key" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+        <span style="align-self:center;color:var(--text-3);font-size:11px">发布前会做长度、URL、敏感词和免责声明检查</span>
+      </div>
+      <table class="tbl"><thead><tr><th>草稿</th><th>币种</th><th>评分</th><th>状态</th><th>Post</th><th>错误</th><th>操作</th></tr></thead><tbody id="pubDraftsBody"></tbody></table>
+    </div>
+  </section>
+
+  <section id="page-trading" class="page">
+    <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">交易</h1><p style="color:var(--text-2);font-size:13px">POTagent 与 LIQagent 共享的 Paper/Live 交易面板</p></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:12px;color:var(--text-2)">Agent</label>
+        <select id="tradeAgentFilter" class="hdr-select" style="width:130px"><option value="">全部</option><option value="pot">POT</option><option value="liq">LIQ</option></select>
+      </div>
+    </div>
+    <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)">
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">总交易</div><div class="kpi-value" id="tradeTotal">0</div></div></div>
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">胜率</div><div class="kpi-value" id="tradeWinRate">0%</div></div></div>
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">盈亏比</div><div class="kpi-value" id="tradePF">0</div></div></div>
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">总收益</div><div class="kpi-value" id="tradePnl">0</div></div></div>
+      <div class="kpi-card"><div class="kpi-body"><div class="kpi-label">实盘就绪</div><div class="kpi-value" id="tradeReady">否</div><div class="kpi-sub">胜率>55% / 盈亏比>1.5 / 回撤<15%</div></div></div>
+    </div>
+    <div class="card" style="margin-bottom:12px"><div class="card-head"><div class="card-title">收益曲线</div><button class="card-action" id="btnTradingRefresh">刷新</button></div><div id="paperEquityChart" class="chart"></div></div>
+    <div class="card"><div class="card-head"><div class="card-title">Paper 订单历史</div></div><table class="tbl"><thead><tr><th>Agent</th><th>币种</th><th>方向</th><th>入场</th><th>退出</th><th>PnL</th><th>原因</th></tr></thead><tbody id="paperOrdersBody"></tbody></table></div>
   </section>
   <section id="page-strategy" class="page">
     <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">策略配置</h1><p style="color:var(--text-2);font-size:13px">清算反向策略参数调整与回测预览</p></div>
@@ -1215,339 +1289,7 @@ button,input,select,textarea{font:inherit;color:inherit}
       </div>
     </div>
   </section>
-  <section id="page-evolution" class="page">
-    <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">自进化系统</h1><p style="color:var(--text-2);font-size:13px">策略自动优化、参数进化与性能追踪</p></div>
-
-    <!-- 4 KPI -->
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-      <div class="kpi-card">
-        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">进化代数</div><div class="kpi-value">0<span class="unit">代</span></div><div class="kpi-sub">等待 CLOSED 样本</div></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">累计提升</div><div class="kpi-value">—</div><div class="kpi-sub">样本不足</div></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon" style="background:var(--blue-soft);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">胜率变化</div><div class="kpi-value">—</div><div class="kpi-sub">样本不足</div></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon" style="background:var(--amber-soft);color:var(--amber)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">下次进化</div><div class="kpi-value" style="font-size:16px">—</div><div class="kpi-sub">手动分析</div></div>
-      </div>
-    </div>
-
-    <!-- Evolution chart + parameter history -->
-    <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:12px;margin-bottom:16px">
-      <div class="card">
-        <div class="card-head"><div class="card-title">进化曲线</div><div class="hm-tabs"><button class="active">收益率</button><button>胜率</button><button>夏普</button></div></div>
-        <div id="evoChart" style="height:260px"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><div class="card-title">参数进化历史</div></div>
-        <div style="display:grid;gap:8px;max-height:260px;overflow-y:auto">
-          <div style="padding:20px;text-align:center;color:var(--text-3);background:var(--surface-2);border-radius:8px">暂无真实进化历史；至少 10 笔 CLOSED paper 订单后生成建议。</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Bottom: fitness + config -->
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-      <div class="card">
-        <div class="card-head"><div class="card-title">适应度评分</div></div>
-        <div id="evoFitnessChart" style="height:160px"></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;font-size:11px">
-          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">收益权重</span><span style="font-weight:600">40%</span></div>
-          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">风控权重</span><span style="font-weight:600">30%</span></div>
-          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">胜率权重</span><span style="font-weight:600">20%</span></div>
-          <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">稳定性</span><span style="font-weight:600">10%</span></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><div class="card-title">进化配置</div></div>
-        <div style="display:grid;gap:10px">
-          <div>
-            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span style="color:var(--text-2)">进化间隔</span><span style="font-family:var(--mono);font-weight:600">4 小时</span></div>
-            <input type="range" min="1" max="24" value="4" style="width:100%;accent-color:var(--purple)">
-          </div>
-          <div>
-            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span style="color:var(--text-2)">变异幅度</span><span style="font-family:var(--mono);font-weight:600">15%</span></div>
-            <input type="range" min="5" max="50" value="15" style="width:100%;accent-color:var(--purple)">
-          </div>
-          <div>
-            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span style="color:var(--text-2)">回退阈值</span><span style="font-family:var(--mono);font-weight:600;color:var(--red)">-2%</span></div>
-            <input type="range" min="1" max="10" value="2" style="width:100%;accent-color:var(--red)">
-          </div>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">自动进化模式</label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">失败自动回退</label>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><div class="card-title">进化日志</div></div>
-        <div style="display:grid;gap:6px;font-size:11px;max-height:220px;overflow-y:auto">
-          <div style="padding:20px;text-align:center;color:var(--text-3);background:var(--surface-2);border-radius:8px">暂无真实进化日志</div>
-        </div>
-      </div>
-    </div>
-  </section>
-  <section id="page-xtrend" class="page">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">
-      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">X 热度</h1><p style="color:var(--text-2);font-size:13px">Twitter/X 加密货币情绪分析 · 讨论热度 · 热门推文</p></div>
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-size:12px;color:var(--text-3)">
-        <div style="display:flex;align-items:center;gap:10px">
-          <span>最后更新: <span id="xLastUpdate">—</span></span>
-          <button class="card-action" id="btnXRefresh" title="使用缓存数据">↻ 刷新</button>
-          <button class="card-action" id="btnXForceRefresh" title="强制调用 X API — 消耗配额" style="color:var(--amber-text)">⚡ 强制刷新</button>
-        </div>
-        <div id="xCacheMeta" style="font-size:10.5px;color:var(--text-3)">无缓存数据 — 点击「强制刷新」获取</div>
-      </div>
-    </div>
-
-    <!-- Top KPI row -->
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-      <div class="kpi-card">
-        <div class="kpi-icon" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 2h3l-7.5 8.57L22 22h-6.63l-5.2-6.79L4.2 22H1.2l8.03-9.17L1 2h6.8l4.7 6.21z"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">情绪总分</div><div class="kpi-value" id="xKpiScore">—</div><div class="kpi-sub" id="xKpiLabel">—</div></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17l5-5 5 5M7 12l5-5 5 5"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">正面推文</div><div class="kpi-value" id="xKpiPos" style="color:var(--green)">—</div><div class="kpi-sub" id="xKpiPosPct">—</div></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon" style="background:var(--red-soft);color:var(--red)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 7l5 5 5-5M7 12l5 5 5-5"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">负面推文</div><div class="kpi-value" id="xKpiNeg" style="color:var(--red)">—</div><div class="kpi-sub" id="xKpiNegPct">—</div></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon" style="background:var(--blue-soft);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
-        <div class="kpi-body"><div class="kpi-label">分析推文</div><div class="kpi-value" id="xKpiTotal">—</div><div class="kpi-sub">最近 1 小时</div></div>
-      </div>
-    </div>
-
-    <!-- Sentiment gauge + AI analysis -->
-    <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:12px;margin-bottom:16px">
-      <div class="card">
-        <div class="card-head"><div class="card-title">情绪仪表</div></div>
-        <div id="xSentimentGauge" style="height:220px"></div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px">
-          <div style="padding:8px;background:var(--green-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">正面</div><div id="xBarPos" style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--green)">—</div></div>
-          <div style="padding:8px;background:var(--surface-2);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">中性</div><div id="xBarNeu" style="font-size:14px;font-weight:700;font-family:var(--mono)">—</div></div>
-          <div style="padding:8px;background:var(--red-soft);border-radius:6px;text-align:center"><div style="font-size:10.5px;color:var(--text-3)">负面</div><div id="xBarNeg" style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red)">—</div></div>
-        </div>
-      </div>
-
-      <div class="card" style="border-left:3px solid var(--purple)">
-        <div class="card-head">
-          <div class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:16px;height:16px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg>AI 深度分析</div>
-          <button class="card-action" id="btnXAnalyze">↻ 重新分析</button>
-        </div>
-        <div id="xAnalysis" style="font-size:12.5px;color:var(--text-2);line-height:1.8;min-height:180px;white-space:pre-wrap">点击「重新分析」基于当前 X 数据生成 AI 解读</div>
-      </div>
-    </div>
-
-    <!-- Trending coins + Top tweets -->
-    <div style="display:grid;grid-template-columns:1fr 1.3fr;gap:12px">
-      <div class="card">
-        <div class="card-head"><div class="card-title">讨论热度 Top</div><span style="font-size:11px;color:var(--text-3)">按提及量排序</span></div>
-        <div id="xTrendingList" style="display:grid;gap:6px;max-height:440px;overflow-y:auto">
-          <div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px">暂无数据</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><div class="card-title">热门推文</div><span style="font-size:11px;color:var(--text-3)">按互动量排序</span></div>
-        <div id="xTweetsList" style="display:grid;gap:10px;max-height:440px;overflow-y:auto">
-          <div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px">暂无数据</div>
-        </div>
-      </div>
-    </div>
-  </section>
-  <section id="page-grok" class="page">
-    <div style="display:grid;grid-template-columns:1fr 340px;gap:12px;height:calc(100vh - 96px)">
-      <!-- Main: chat + report -->
-      <div class="card" style="display:flex;flex-direction:column;overflow:hidden">
-        <div class="card-head" style="flex-shrink:0">
-          <div class="card-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><circle cx="9" cy="10" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/><path d="M8 15s1.5 2 4 2 4-2 4-2"/></svg>
-            Grok 加密分析师
-          </div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span style="font-size:11px;color:var(--text-3)" id="grokModelPill">—</span>
-            <button class="card-action" id="btnGrokReset">↻ 清空对话</button>
-          </div>
-        </div>
-
-        <div style="flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px" id="grokMessages">
-          <div style="display:flex;gap:10px;align-items:flex-start">
-            <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#6c5ce7,#a29bfe);display:grid;place-items:center;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><circle cx="9" cy="10" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/><path d="M8 15s1.5 2 4 2 4-2 4-2"/></svg></div>
-            <div style="flex:1;background:var(--purple-soft);border-radius:0 12px 12px 12px;padding:12px 14px;font-size:12.5px;line-height:1.7">
-              <div style="font-weight:600;margin-bottom:4px;color:var(--purple-dark)">Grok 分析师</div>
-              你好，我是专门分析 X (Twitter) 加密货币情报的 AI 分析师。我可以：<br>
-              · 实时搜索 X 讨论（需触发词：当前/今天/$BTC 等）<br>
-              · 生成结构化报告（说"给我一份简报"）<br>
-              · 起草候选推文（说"帮我写条关于 XX 的推文"）<br>
-              · 深度分析 KOL 观点、情绪转折、热度趋势<br>
-              有什么想了解的？
-            </div>
-          </div>
-        </div>
-
-        <!-- Input area -->
-        <div style="flex-shrink:0;padding:10px 16px;border-top:1px solid var(--border)">
-          <div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap">
-            <button class="grok-quick" data-prompt="现在加密货币 X 上的整体情绪如何？生成一份日度简报（JSON格式）">📊 日度简报</button>
-            <button class="grok-quick" data-prompt="现在 $BTC 在 X 上讨论什么？有什么关键信号？">🔍 BTC 情报</button>
-            <button class="grok-quick" data-prompt="最近有什么加密 KOL 发了有影响力的推文？">👑 KOL 观点</button>
-            <button class="grok-quick" data-prompt="帮我写 3 条关于当前 BTC 清算地图分析的推文候选">✍️ 起草推文</button>
-            <button class="grok-quick" data-prompt="哪些币种 mention 在上涨？生成热度排行">🔥 热度排行</button>
-          </div>
-          <div style="display:flex;gap:10px;align-items:flex-end">
-            <div style="flex:1;position:relative">
-              <textarea id="grokInput" placeholder="提问或要求生成报告... (Shift+Enter 换行)" style="width:100%;min-height:40px;max-height:120px;padding:10px 14px;border:1px solid var(--border);border-radius:10px;resize:none;font-size:13px;line-height:1.5;background:var(--surface-2)" rows="1"></textarea>
-            </div>
-            <label style="display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--text-3);cursor:pointer;white-space:nowrap" title="强制调用 X Live Search">
-              <input type="checkbox" id="grokForceLive" style="accent-color:var(--purple)">🔴 实时
-            </label>
-            <button id="btnGrokSend" style="width:40px;height:40px;border-radius:10px;border:none;background:var(--purple);color:#fff;cursor:pointer;display:grid;place-items:center;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
-          </div>
-          <div style="font-size:10.5px;color:var(--text-3);margin-top:4px" id="grokCostMeta">累计 0 次调用 · $0.000</div>
-        </div>
-      </div>
-
-      <!-- Right sidebar: structured report viewer + tweet composer -->
-      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto">
-        <!-- Structured report card -->
-        <div class="card" id="grokReportCard" style="display:none">
-          <div class="card-head"><div class="card-title" style="font-size:12.5px">📋 结构化报告</div><button class="card-action" id="btnGrokExport" style="font-size:10.5px">导出 JSON</button></div>
-          <div id="grokReportBody" style="font-size:11.5px;max-height:420px;overflow-y:auto"></div>
-        </div>
-
-        <!-- Tweet drafts card -->
-        <div class="card" id="grokDraftsCard" style="display:none">
-          <div class="card-head"><div class="card-title" style="font-size:12.5px">✍️ 推文候选</div><span style="font-size:10.5px;color:var(--text-3)" id="grokDraftsMeta">—</span></div>
-          <div id="grokDraftsBody" style="display:grid;gap:8px;max-height:420px;overflow-y:auto"></div>
-        </div>
-
-        <!-- Agent config card -->
-        <div class="card">
-          <div class="card-head"><div class="card-title" style="font-size:12.5px">⚙️ Agent 配置</div></div>
-          <div style="display:grid;gap:6px;font-size:11px">
-            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">System Prompt</span><span id="grokSysPromptChars" style="font-family:var(--mono);font-weight:600">— chars</span></div>
-            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">模型</span><span id="grokModelMeta" style="font-family:var(--mono);font-weight:600">—</span></div>
-            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">会话数</span><span id="grokSessionCount" style="font-family:var(--mono);font-weight:600">0</span></div>
-            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">累计调用</span><span id="grokTotalCalls" style="font-family:var(--mono);font-weight:600">0</span></div>
-            <div style="padding:6px 8px;background:var(--surface-2);border-radius:5px;display:flex;justify-content:space-between"><span style="color:var(--text-3)">累计费用</span><span id="grokTotalCost" style="font-family:var(--mono);font-weight:600;color:var(--amber)">$0.0000</span></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-  <!-- ===== LOGS ===== -->
-  <section id="page-logs" class="page">
-    <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
-      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">系统日志</h1><p style="color:var(--text-2);font-size:13px">实时事件流 + AI 检修</p></div>
-      <div style="display:flex;gap:8px">
-        <button id="btnLogsRefresh" style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:12px;cursor:pointer">刷新</button>
-        <button id="btnLogsDiagnose" style="padding:8px 14px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:12px;font-weight:600;cursor:pointer">AI 检修</button>
-      </div>
-    </div>
-
-    <!-- AI Diagnosis result -->
-    <div id="logsDiagnosisCard" class="card" style="margin-bottom:12px;display:none;border-left:3px solid var(--purple)">
-      <div class="card-head"><div class="card-title">AI 诊断结果</div><button class="card-action" onclick="document.getElementById('logsDiagnosisCard').style.display='none'">关闭</button></div>
-      <div id="logsDiagnosisBody" style="font-size:12.5px;line-height:1.8;white-space:pre-wrap"></div>
-    </div>
-
-    <!-- Log entries -->
-    <div class="card">
-      <div class="card-head">
-        <div class="card-title">事件日志</div>
-        <div style="display:flex;gap:6px">
-          <select id="logsFilter" class="hdr-select" style="width:100px;height:28px;font-size:11px">
-            <option value="">全部</option>
-            <option value="error">错误</option>
-            <option value="signal">信号</option>
-            <option value="order">订单</option>
-            <option value="risk">风控</option>
-            <option value="phase">阶段</option>
-            <option value="heatmap">热力图</option>
-          </select>
-          <span id="logsCount" style="font-size:11px;color:var(--text-3);display:flex;align-items:center">0 条</span>
-        </div>
-      </div>
-      <div id="logsBody" style="max-height:600px;overflow-y:auto;font-size:12px;font-family:var(--mono)"></div>
-    </div>
-  </section>
-
-  <!-- ===== TWEET PIPELINE ===== -->
-  <section id="page-pipeline" class="page">
-    <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
-      <div><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">推文流水线</h1><p style="color:var(--text-2);font-size:13px">一键生成 → 审核 → 发布</p></div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <span id="pipelineStatus" style="font-size:11px;color:var(--text-3)">就绪</span>
-        <button id="btnPipelineGenerate" style="padding:10px 20px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-          生成推文
-        </button>
-      </div>
-    </div>
-
-    <!-- LLM Provider selector -->
-    <div class="card" style="margin-bottom:12px;padding:12px 16px">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <label style="font-size:12px;color:var(--text-2);font-weight:500;white-space:nowrap">LLM 模型</label>
-        <select id="pipelineProvider" class="hdr-select" style="width:140px">
-          {% for p in providers %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
-        </select>
-        <input id="pipelineApiKey" type="password" placeholder="API Key" style="flex:1;min-width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
-        <input id="pipelineModel" type="text" placeholder="模型 (留空用默认)" style="width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
-        <input id="pipelineBaseUrl" type="text" placeholder="自定义 Base URL (中转)" style="width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
-        <label style="font-size:12px;color:var(--text-2);font-weight:500;white-space:nowrap">图片市场 LLM</label>
-        <select id="pipelineImageProvider" class="hdr-select" style="width:140px">
-          <option value="">跟随文字模型</option>
-          {% for p in providers %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
-        </select>
-        <input id="pipelineImageApiKey" type="password" placeholder="图片 LLM API Key (留空跟随)" style="flex:1;min-width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
-        <input id="pipelineImageModel" type="text" placeholder="图片模型 (留空默认)" style="width:160px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
-        <input id="pipelineImageBaseUrl" type="text" placeholder="图片 Base URL (中转)" style="width:220px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:11px;background:var(--surface-2)">
-      </div>
-      <div style="margin-top:6px;font-size:10.5px;color:var(--text-3)">支持所有 OpenAI 兼容 API，包括 OpenRouter、302.ai、SiliconFlow 等中转服务。填写 Base URL 即可。</div>
-    </div>
-
-    <!-- Context summary -->
-    <div id="pipelineContext" class="card" style="margin-bottom:12px;display:none">
-      <div style="display:flex;align-items:center;gap:8px;font-size:12px">
-        <span style="padding:3px 8px;background:var(--purple-soft);color:var(--purple-dark);border-radius:4px;font-weight:600;font-size:10px">数据摘要</span>
-        <span id="pipelineContextText" style="color:var(--text-2)">—</span>
-        <span class="spacer"></span>
-        <span id="pipelineCost" style="font-family:var(--mono);font-size:10.5px;color:var(--text-3)">—</span>
-      </div>
-    </div>
-
-    <!-- Candidates grid -->
-    <div id="pipelineCandidates" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px"></div>
-
-    <!-- Empty state -->
-    <div id="pipelineEmpty" class="card" style="text-align:center;padding:60px 20px">
-      <div style="width:56px;height:56px;margin:0 auto 16px;background:var(--purple-soft);border-radius:14px;display:grid;place-items:center">
-        <svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" style="width:28px;height:28px"><path d="M12 19V5M5 12l7-7 7 7"/><path d="M3 21h18"/></svg>
-      </div>
-      <div style="font-size:15px;font-weight:600;margin-bottom:6px">点击「生成推文」开始</div>
-      <div style="font-size:12.5px;color:var(--text-2);max-width:320px;margin:0 auto">系统将综合当前市场数据、策略信号和 X 社区情绪，自动生成 3 条不同风格的候选推文供你审核</div>
-    </div>
-
-    <!-- History -->
-    <div class="card" style="margin-top:16px">
-      <div class="card-head"><div class="card-title">发布历史</div><button class="card-action" id="btnPipelineRefreshHistory">刷新</button></div>
-      <div id="pipelineHistory" style="font-size:12px;color:var(--text-3)">暂无记录</div>
-    </div>
-  </section>
-
+  <section id="page-evolution" class="page"></section>
   <section id="page-settings" class="page">
     <div style="margin-bottom:16px"><h1 style="font-size:22px;font-weight:700;margin-bottom:4px">设置</h1><p style="color:var(--text-2);font-size:13px">系统配置、API 密钥与偏好设置</p></div>
 
@@ -1731,6 +1473,25 @@ button,input,select,textarea{font:inherit;color:inherit}
           </div>
         </div>
 
+        <div class="card" data-settings-section="llm">
+          <div class="card-head"><div class="card-title">多 Agent 独立 LLM 配置</div></div>
+          <div style="display:grid;gap:10px" id="agentConfigGrid">
+            {% for agent in ['liq','pot','anl','pub'] %}
+            <div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)" data-agent-config="{{ agent }}">
+              <label style="font-size:12px;color:var(--text-2);font-weight:600;display:block;margin-bottom:8px">{{ agent|upper }}agent</label>
+              <div style="display:grid;grid-template-columns:120px 1fr 1fr 100px 90px;gap:8px">
+                <select class="hdr-select agent-provider" data-agent="{{ agent }}">{% for p in providers %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select>
+                <input class="agent-key" data-agent="{{ agent }}" type="password" placeholder="独立 API Key" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+                <input class="agent-model" data-agent="{{ agent }}" type="text" placeholder="模型" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+                <input class="agent-temp" data-agent="{{ agent }}" type="number" step="0.1" min="0" max="2" value="0.2" placeholder="Temp" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2)"><input class="agent-enabled" data-agent="{{ agent }}" type="checkbox" checked>启用</label>
+              </div>
+              <input class="agent-base-url" data-agent="{{ agent }}" type="text" placeholder="自定义中转站 Base URL（可选）" style="margin-top:8px;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+
         <!-- Usage Stats -->
         <div class="card" data-settings-section="llm">
           <div class="card-head"><div class="card-title">使用统计</div><button class="card-action" id="btnRefreshUsage">刷新</button></div>
@@ -1781,6 +1542,28 @@ button,input,select,textarea{font:inherit;color:inherit}
           </div>
         </div>
 
+        <div class="card" data-settings-section="trading">
+          <div class="card-head"><div class="card-title">POTagent 扫描与交易参数</div></div>
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">扫描间隔(秒)</label><input id="potPollSeconds" type="number" min="10" value="60" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">OI涨幅阈值(%)</label><input id="potMinOiChange" type="number" step="0.1" min="0" value="8" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">已结算正费率期数</label><input id="potMinFrPeriods" type="number" min="1" value="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">最低24h成交额(USDT)</label><input id="potMinVolume" type="number" min="0" value="2000000" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">观察费率绝对值</label><input id="potWatchFrAbs" type="number" step="0.00001" min="0" value="0.0001" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">入场观察置信度</label><input id="potWatchThreshold" type="number" min="1" max="100" value="70" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">观察超时 tick</label><input id="potWatchTimeout" type="number" min="1" value="480" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">最大同时持仓</label><input id="potMaxPositions" type="number" min="1" value="3" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">Paper滑点</label><input id="potPaperSlippage" type="number" step="0.001" min="0" max="0.05" value="0.003" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">发布模式</label><select id="potPublishMode" class="hdr-select" style="width:100%"><option value="manual">manual 手动确认</option><option value="ai_decides">ai_decides AI入队</option><option value="scheduled">scheduled 定时队列</option></select></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">入场确认</label><select id="potEntryConfirm" class="hdr-select" style="width:100%"><option value="aggressive">激进：信号后可直接入场</option><option value="breakout">突破确认后入场</option><option value="candle_close">收阳确认后入场</option></select></div>
+            <div><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">单笔Paper名义本金</label><input id="potNotional" type="number" min="1" value="100" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)"></div>
+          </div>
+          <div style="display:flex;gap:14px;margin-top:12px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input id="potAutoAnalyze" type="checkbox" style="accent-color:var(--purple)">自动 AI 分析高分信号</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input id="potAutoTrade" type="checkbox" style="accent-color:var(--purple)">Paper模式自动跟单</label>
+          </div>
+        </div>
+
         <!-- Data management -->
         <div class="card" data-settings-section="data">
           <div class="card-head"><div class="card-title">数据管理</div><button class="card-action" id="btnRefreshDataStats">刷新</button></div>
@@ -1801,16 +1584,18 @@ button,input,select,textarea{font:inherit;color:inherit}
               <div style="font-size:10.5px;color:var(--text-3)" id="dataEventsSize">—</div>
             </div>
           </div>
-          <div style="display:flex;gap:10px;margin-top:12px">
-            <button style="padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:12px;cursor:pointer">导出数据</button>
-            <button style="padding:6px 14px;border:1px solid var(--red);border-radius:6px;background:var(--red-soft);font-size:12px;color:var(--red);cursor:pointer">清空历史</button>
-          </div>
         </div>
 
         <!-- Notifications -->
         <div class="card" data-settings-section="notify">
           <div class="card-head"><div class="card-title">通知设置</div></div>
           <div style="display:grid;gap:8px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input id="potTgEnabled" type="checkbox" style="accent-color:var(--purple)">POTagent 新信号 TG 推送</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr 120px;gap:8px">
+              <input id="potTgToken" type="password" placeholder="TG Bot Token" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+              <input id="potTgChatId" type="text" placeholder="TG Chat ID" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+              <input id="potAlertScore" type="number" value="70" placeholder="阈值" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:12px;background:var(--surface)">
+            </div>
             <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">订单成交通知（桌面弹窗）</label>
             <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" checked style="accent-color:var(--purple)">信号触发通知</label>
             <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer"><input type="checkbox" style="accent-color:var(--purple)">连续亏损暂停通知</label>
@@ -1837,7 +1622,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 
         <!-- Save button -->
         <div style="display:flex;justify-content:flex-end;gap:10px">
-          <button style="padding:8px 20px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:13px;cursor:pointer">重置</button>
+          <button style="padding:8px 20px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:13px;cursor:pointer" id="btnSettingsReset">重置表单</button>
           <button style="padding:8px 20px;border:none;border-radius:8px;background:var(--purple);color:#fff;font-size:13px;font-weight:600;cursor:pointer" id="btnSaveSettings">保存设置</button>
         </div>
       </div>
